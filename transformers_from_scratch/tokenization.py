@@ -167,7 +167,7 @@ class Tokenizer:
 
 # Example usage
 if __name__ == "__main__":
-    with open("toy_data/input.txt", "r", encoding="utf-8") as f:
+    with open("toy_data/example.txt", "r", encoding="utf-8") as f:
         text = f.read()
 
     tokenizer = Tokenizer(vocab_size=1024)
