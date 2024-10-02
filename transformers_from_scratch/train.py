@@ -2,55 +2,72 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import joblib
+from pydantic import BaseModel
+from model import Transformer, GPT
+from tokenization import Tokenizer
 
-from model import Transformer
+class ModelConfig(BaseModel):
+    embed_dim: int = 512 
+    tgt_vocab_size: int = 1024
+    seq_len: int = 34 
+    num_layers: int = 4
+    expansion_factor: int = 4
+    n_heads: int = 8 
 
-#defining the model parameters in detail
-model = Transformer(embed_dim=512,
-                    src_vocab_size=1024,
-                    tgt_vocab_size=1024,
-                    seq_len=10,
-                    num_layers=4,
-                    expansion_factor=4,
-                    n_heads=8).to("cuda")
+class DatasetConfig(BaseModel):
+    batch_size: int = 16 
+    shuffle: bool = True
 
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
-
-
-#creating the dataset
 class Dataset(torch.utils.data.Dataset):
-
-    def __init__(self, data):
-        self.data = data
+    def __init__(self, data, seq_len, tokenizer):
+        self.seq_len = seq_len - 2
+        self.tokenizer = tokenizer
+        self.data = self.tokenizer.encode(data)
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        if idx + 20 > len(self.data):
+        if idx + self.seq_len + 1 > len(self.data):
             idx = 0
-        src = self.data[idx:idx + 10]
-        tgt = self.data[idx + 10:idx + 20]
+        src = self.tokenizer.add_special_tokens(self.data[idx:idx + self.seq_len])
+        tgt = self.tokenizer.add_special_tokens(self.data[idx + 1:idx + self.seq_len + 1])
         return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
 
+def main():
+    # Load tokenizer
+    tokenizer = Tokenizer.load("toy_data/test")
 
-#creating the train dataloader
-data = joblib.load('toy_data/ids')
-train_loader = torch.utils.data.DataLoader(Dataset(data), batch_size=8, shuffle=True)
+    # Model configuration
+    model_config = ModelConfig()
+    model = GPT(**model_config.dict()).to("cuda")
 
-#training the model
-for epoch in range(10):
-    for i, (src, tgt) in enumerate(train_loader):
-        optimizer.zero_grad()
-        output = model(src, tgt)
-        print(output.view(-1, 1024))
-        loss = criterion(output.view(-1, 1024), tgt.view(-1))
-        loss.backward()
-        optimizer.step()
-        break
-        print(f'Epoch: {epoch}, Loss: {loss.item()}')
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
 
-    if epoch % 5 == 0:
-        torch.save(model.state_dict(), f'transformer_epoch_{epoch}.pth')
-        print('Model saved!')
+    # Load data and create DataLoader
+    with open("toy_data/example.txt", "r", encoding="utf-8") as f:
+        data = f.read()
+
+    dataset_config = DatasetConfig()
+    train_loader = torch.utils.data.DataLoader(Dataset(data, model_config.seq_len, tokenizer), batch_size=dataset_config.batch_size, shuffle=dataset_config.shuffle)
+
+    # Training loop
+    for epoch in range(100):
+        model.train()
+        for i, (src, tgt) in enumerate(train_loader):
+            mask = model.make_tgt_mask(tgt).to("cuda")
+            optimizer.zero_grad()
+            output = model(src, mask)
+            loss = criterion(output.view(-1, 1024), tgt.view(-1))
+            loss.backward()
+            optimizer.step()
+            print(f'Epoch: {epoch}, Loss: {loss.item()}')
+
+        if epoch % 5 == 0:
+            torch.save(model.state_dict(), f'transformer_epoch_{epoch}.pth')
+            print('Model saved!')
+
+if __name__ == "__main__":
+    main()
+

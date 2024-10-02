@@ -1,37 +1,28 @@
 import torch
 import joblib
+from pydantic import BaseModel
 
-from model import Transformer
-from tokenization import encode, decode
+from model import Transformer, GPT
+from tokenization import Tokenizer
 
-# load merges and vocab
-merges = joblib.load('./toy_data/merges')
-vocab = joblib.load('./toy_data/vocab')
-# Load the model
-state_dict = torch.load('./transformer_epoch_5.pth')
+class ModelConfig(BaseModel):
+    embed_dim: int = 512 
+    tgt_vocab_size: int = 1024
+    seq_len: int = 34 
+    num_layers: int = 4 
+    expansion_factor: int = 4
+    n_heads: int = 8
 
-model = Transformer(embed_dim=512,
-                    src_vocab_size=1024,
-                    tgt_vocab_size=1024,
-                    seq_len=10,
-                    num_layers=4,
-                    expansion_factor=4,
-                    n_heads=8).to("cuda")
+state_dict = torch.load('./transformer_epoch_35.pth')
+model_config = ModelConfig()
+model = GPT(**model_config.dict()).to("cuda")
+tokenizer = Tokenizer.load("toy_data/test")
 model.load_state_dict(state_dict)
 model.eval()
 
-string = "Hello, my name is"
-tokens = encode(string, merges)
-src_tokens = torch.tensor(tokens).unsqueeze(0).to("cuda")
-tgt_tokens = torch.tensor(tokens[-1:]).unsqueeze(0).to("cuda")
-output = model(src_tokens, tgt_tokens)
-print(f"output shae: {output.shape}")
-print(f"output: {output}")
-output = output.view(-1, 1024)
-print(f"output shae: {output.shape}")
-print(f"output: {output}")
-output = torch.argmax(output, dim=-1)
-print(f"output shae: {output.shape}")
-print(f"output: {output}")
-output = decode(output, vocab)
-print(output)
+string = "Hello,"
+input_ids = tokenizer.encode(string)
+generated = model.generate(input_ids, 20)
+generated = generated.cpu().tolist()
+print(tokenizer.decode(generated[0]))
+

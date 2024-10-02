@@ -84,7 +84,6 @@ class Tokenizer:
             List[int]: The list of token IDs.
         """
         tokens = list(text.encode("utf-8"))
-        tokens = [self.SPECIAL_TOKENS["<BOS>"]] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
         while len(tokens) >= 2:
             stats = self.get_stats(tokens)
             pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
@@ -93,6 +92,18 @@ class Tokenizer:
             idx = self.merges[pair]
             tokens = self.merge_tokens(tokens, pair, idx)
         return tokens
+
+    def add_special_tokens(self, tokens: List[int]) -> List[int]:
+        """
+        Adds special tokens to the list of token IDs.
+
+        Args:
+            tokens (List[int]): The list of token IDs.
+
+        Returns:
+            List[int]: The list of token IDs with special tokens added.
+        """
+        return [self.SPECIAL_TOKENS["<BOS>"]] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
 
     def decode(self, tokens: List[int]) -> str:
         """
