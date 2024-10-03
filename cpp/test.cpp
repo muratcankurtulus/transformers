@@ -13,4 +13,3 @@ int main(){
 	std::cout << mtrx << std::endl;
 	return 0;
 }
-

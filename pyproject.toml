@@ -1,0 +1,5 @@
+[tool.codespell]
+skip="toy_data/*"
+
+[tool.flake8]
+max-line-length = 120

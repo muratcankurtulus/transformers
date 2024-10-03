@@ -1,12 +1,13 @@
-import collections
-import regex as re
-from typing import *
-import joblib
 import os
+from typing import Dict, List, Tuple
+
+import joblib
+import regex as re
+
 
 class Tokenizer:
-    """
-    A simple tokenizer class for encoding and decoding text using byte pair encoding (BPE).
+    """A simple tokenizer class for encoding and decoding text using byte pair
+    encoding (BPE).
 
     Attributes:
         SPECIAL_TOKENS (Dict[str, int]): Special tokens with their corresponding IDs.
@@ -15,28 +16,25 @@ class Tokenizer:
         merges (Dict[Tuple[int, int], int]): The merge operations for BPE.
     """
 
-    SPECIAL_TOKENS = {
-        "<PAD>": 0,
-        "<UNK>": 1,
-        "<BOS>": 2,
-        "<EOS>": 3
-    }
+    SPECIAL_TOKENS = {"<PAD>": 0, "<UNK>": 1, "<BOS>": 2, "<EOS>": 3}
 
     def __init__(self, vocab_size: int = 1024):
-        """
-        Initializes the Tokenizer with a given vocabulary size.
+        """Initializes the Tokenizer with a given vocabulary size.
 
         Args:
             vocab_size (int): The size of the vocabulary. Default is 1024.
         """
         self.vocab_size = vocab_size
         self.vocab = {idx: bytes([idx]) for idx in range(256)}
-        self.vocab.update({v: k.encode("utf-8") for k, v in self.SPECIAL_TOKENS.items()})
+        self.vocab.update({
+            v: k.encode("utf-8")
+            for k, v in self.SPECIAL_TOKENS.items()
+        })
         self.merges = {}
 
-    def get_stats(self, tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
-        """
-        Computes the frequency of each pair of consecutive tokens.
+    def get_stats(self,
+                  tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
+        """Computes the frequency of each pair of consecutive tokens.
 
         Args:
             tokens (List[Tuple[int, int]]): The list of token pairs.
@@ -49,9 +47,9 @@ class Tokenizer:
             counts[pair] = counts.get(pair, 0) + 1
         return counts
 
-    def merge_tokens(self, tokens: List[Tuple[int, int]], pair: Tuple[int, int], idx) -> List[Tuple[int, int]]:
-        """
-        Merges a specific pair of tokens in the token list.
+    def merge_tokens(self, tokens: List[Tuple[int, int]],
+                     pair: Tuple[int, int], idx) -> List[Tuple[int, int]]:
+        """Merges a specific pair of tokens in the token list.
 
         Args:
             tokens (List[Tuple[int, int]]): The list of tokens.
@@ -74,8 +72,7 @@ class Tokenizer:
         return new_tokens
 
     def encode(self, text: str) -> List[int]:
-        """
-        Encodes a given text into a list of token IDs.
+        """Encodes a given text into a list of token IDs.
 
         Args:
             text (str): The input text to encode.
@@ -94,8 +91,7 @@ class Tokenizer:
         return tokens
 
     def add_special_tokens(self, tokens: List[int]) -> List[int]:
-        """
-        Adds special tokens to the list of token IDs.
+        """Adds special tokens to the list of token IDs.
 
         Args:
             tokens (List[int]): The list of token IDs.
@@ -103,11 +99,11 @@ class Tokenizer:
         Returns:
             List[int]: The list of token IDs with special tokens added.
         """
-        return [self.SPECIAL_TOKENS["<BOS>"]] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
+        return [self.SPECIAL_TOKENS["<BOS>"]
+                ] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
 
     def decode(self, tokens: List[int]) -> str:
-        """
-        Decodes a list of token IDs back into a string.
+        """Decodes a list of token IDs back into a string.
 
         Args:
             tokens (List[int]): The list of token IDs to decode.
@@ -121,8 +117,8 @@ class Tokenizer:
         return text
 
     def train(self, text: str):
-        """
-        Trains the tokenizer on a given text to build the vocabulary and merge operations.
+        """Trains the tokenizer on a given text to build the vocabulary and
+        merge operations.
 
         Args:
             text (str): The input text to train on.
@@ -140,15 +136,16 @@ class Tokenizer:
         for i in range(num_merges):
             stats = self.get_stats(copy_tokens)
             pair = max(stats, key=stats.get)
-            copy_tokens = self.merge_tokens(copy_tokens, pair, 256 + i + len(self.SPECIAL_TOKENS))
+            copy_tokens = self.merge_tokens(copy_tokens, pair,
+                                            256 + i + len(self.SPECIAL_TOKENS))
             self.merges[pair] = 256 + i + len(self.SPECIAL_TOKENS)
 
         for (a, b), idx in self.merges.items():
             self.vocab[idx] = self.vocab[a] + self.vocab[b]
 
     def save(self, directory: str):
-        """
-        Saves the tokenizer's vocabulary and merges to the specified directory.
+        """Saves the tokenizer's vocabulary and merges to the specified
+        directory.
 
         Args:
             directory (str): The directory where the tokenizer data will be saved.
@@ -160,8 +157,8 @@ class Tokenizer:
 
     @classmethod
     def load(cls, directory: str) -> 'Tokenizer':
-        """
-        Loads the tokenizer's vocabulary and merges from the specified directory.
+        """Loads the tokenizer's vocabulary and merges from the specified
+        directory.
 
         Args:
             directory (str): The directory from where the tokenizer data will be loaded.
@@ -176,9 +173,10 @@ class Tokenizer:
         tokenizer.vocab = vocab
         return tokenizer
 
+
 # Example usage
 if __name__ == "__main__":
-    with open("toy_data/example.txt", "r", encoding="utf-8") as f:
+    with open("toy_data/example.txt", encoding="utf-8") as f:
         text = f.read()
 
     tokenizer = Tokenizer(vocab_size=1024)

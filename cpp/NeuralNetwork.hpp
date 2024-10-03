@@ -3,7 +3,7 @@
 #include <iostream>
 #include <vector>
 
-// typedefs for easy syntax 
+// typedefs for easy syntax
 typedef float Scalar;
 typedef Eigen::MatrixXf Matrix;
 typedef Eigen::RowVectorXf RowVector;
