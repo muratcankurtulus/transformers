@@ -176,14 +176,14 @@ class Tokenizer:
 
 # Example usage
 if __name__ == "__main__":
-    with open("toy_data/example.txt", encoding="utf-8") as f:
+    with open("toy_data/python_book.txt", encoding="utf-8") as f:
         text = f.read()
 
-    tokenizer = Tokenizer(vocab_size=1024)
+    tokenizer = Tokenizer(vocab_size=4096)
     tokenizer.train(text)
-    tokenizer.save("toy_data/test")
+    tokenizer.save("toy_data/python_book")
 
-    loaded_tokenizer = Tokenizer.load("toy_data/test")
+    loaded_tokenizer = Tokenizer.load("toy_data/python_book")
 
     encoded = loaded_tokenizer.encode("Hello, world!")
     print(f"Encoded: {encoded}")
