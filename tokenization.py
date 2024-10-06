@@ -179,7 +179,7 @@ if __name__ == "__main__":
     with open("toy_data/python_book.txt", encoding="utf-8") as f:
         text = f.read()
 
-    tokenizer = Tokenizer(vocab_size=4096)
+    tokenizer = Tokenizer(vocab_size=512)
     tokenizer.train(text)
     tokenizer.save("toy_data/python_book")
 

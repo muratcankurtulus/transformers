@@ -3,3 +3,4 @@ env/*
 transformers_from_scratch/toy_data/*
 *.pth
 /toy_data/*
+runs/

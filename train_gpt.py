@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from gpt import GPT
@@ -9,12 +10,12 @@ from tokenization import Tokenizer
 
 
 class ModelConfig(BaseModel):
-    embed_dim: int = 512
-    tgt_vocab_size: int = 4096
+    embed_dim: int = 32
+    tgt_vocab_size: int = 512
     seq_len: int = 256
-    num_layers: int = 6
-    expansion_factor: int = 6
-    n_heads: int = 8
+    num_layers: int = 2
+    expansion_factor: int = 2
+    n_heads: int = 2
 
 
 class DatasetConfig(BaseModel):
@@ -25,7 +26,7 @@ class DatasetConfig(BaseModel):
 class Dataset(torch.utils.data.Dataset):
 
     def __init__(self, data, seq_len, tokenizer):
-        self.seq_len = seq_len - 2
+        self.seq_len = seq_len
         self.tokenizer = tokenizer
         self.data = self.tokenizer.encode(data)
 
@@ -36,11 +37,6 @@ class Dataset(torch.utils.data.Dataset):
         if idx + self.seq_len + 1 > len(self.data):
             idx = 0
 
-
-#        src = self.tokenizer.add_special_tokens(self.data[idx:idx +
-#                                                          self.seq_len])
-#        tgt = self.tokenizer.add_special_tokens(self.data[idx + 1:idx +
-#                                                          self.seq_len + 1])
         src = self.data[idx:idx + self.seq_len]
         tgt = self.data[idx + 1:idx + self.seq_len + 1]
         return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
@@ -49,18 +45,20 @@ class Dataset(torch.utils.data.Dataset):
 def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
-    with tqdm(eval_loader, unit="iter") as tepoch:
+    with tqdm(eval_loader, unit="batch") as tepoch:
         with torch.no_grad():
             for src, tgt in tepoch:
                 mask = model.make_tgt_mask(tgt).to("cuda")
                 output = model(src, mask)
                 loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
-                tepoch.set_postfix(eval_loss={loss.item()})
+                tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
                 total_loss += loss.item()
     return total_loss / len(eval_loader)
 
 
 def main():
+    writer = SummaryWriter("runs/gpt")
+
     # Load tokenizer
     tokenizer = Tokenizer.load("toy_data/python_book")
 
@@ -70,7 +68,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(),
-                           lr=0.0001,
+                           lr=0.001,
                            betas=(0.9, 0.98),
                            eps=1e-9)
 
@@ -93,10 +91,10 @@ def main():
         shuffle=dataset_config.shuffle)
 
     # Training loop
-    for epoch in range(100):
+    for epoch in range(500):
         train_loss = 0
         model.train()
-        with tqdm(train_loader, unit="iter") as tepoch:
+        with tqdm(train_loader, unit="batch") as tepoch:
             for src, tgt in tepoch:
                 mask = model.make_tgt_mask(tgt).to("cuda")
                 optimizer.zero_grad()
@@ -105,7 +103,7 @@ def main():
                                  tgt.view(-1))
                 loss.backward()
                 optimizer.step()
-                tepoch.set_postfix(loss={loss.item()})
+                tepoch.set_postfix(loss=f"{loss.item():.4f}")
                 train_loss += loss.item()
 
             train_loss /= len(train_loader)
@@ -115,10 +113,16 @@ def main():
         print(
             f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}"
         )
-        if epoch % 5 == 0:
+        if epoch % 5 == 0 and epoch != 0:
             torch.save(model.state_dict(), f'gpt_epoch_{epoch}.pth')
             print('Model saved!')
 
+        writer.add_scalar("train_loss", train_loss, epoch)
+        writer.add_scalar("eval_loss", eval_loss, epoch)
+    writer.flush()
+    return writer
+
 
 if __name__ == "__main__":
-    main()
+    writer = main()
+    writer.close()
