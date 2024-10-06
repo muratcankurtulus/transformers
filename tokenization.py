@@ -3,6 +3,7 @@ from typing import Dict, List, Tuple
 
 import joblib
 import regex as re
+from tqdm import tqdm
 
 
 class Tokenizer:
@@ -133,14 +134,14 @@ class Tokenizer:
 
         copy_tokens = tokens.copy()
         num_merges = self.vocab_size - 256 - len(self.SPECIAL_TOKENS)
-        for i in range(num_merges):
+        for i in tqdm(range(num_merges)):
             stats = self.get_stats(copy_tokens)
             pair = max(stats, key=stats.get)
             copy_tokens = self.merge_tokens(copy_tokens, pair,
                                             256 + i + len(self.SPECIAL_TOKENS))
             self.merges[pair] = 256 + i + len(self.SPECIAL_TOKENS)
 
-        for (a, b), idx in self.merges.items():
+        for (a, b), idx in tqdm(self.merges.items()):
             self.vocab[idx] = self.vocab[a] + self.vocab[b]
 
     def save(self, directory: str):
@@ -176,12 +177,14 @@ class Tokenizer:
 
 # Example usage
 if __name__ == "__main__":
-    with open("toy_data/python_book.txt", encoding="utf-8") as f:
+    print("loading data...")
+    with open("toy_data/train.txt", encoding="utf-8") as f:
         text = f.read()
 
-    tokenizer = Tokenizer(vocab_size=512)
+    print("training tokenizer...")
+    tokenizer = Tokenizer(vocab_size=8192)
     tokenizer.train(text)
-    tokenizer.save("toy_data/python_book")
+    tokenizer.save("toy_data/wiki_text_2")
 
     loaded_tokenizer = Tokenizer.load("toy_data/python_book")
 
