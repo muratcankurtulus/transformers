@@ -10,16 +10,16 @@ from tokenization import Tokenizer
 
 
 class ModelConfig(BaseModel):
-    embed_dim: int = 32
-    tgt_vocab_size: int = 512
+    embed_dim: int = 512
+    tgt_vocab_size: int = 8192
     seq_len: int = 256
-    num_layers: int = 2
-    expansion_factor: int = 2
-    n_heads: int = 2
+    num_layers: int = 4
+    expansion_factor: int = 4
+    n_heads: int = 8
 
 
 class DatasetConfig(BaseModel):
-    batch_size: int = 32
+    batch_size: int = 64
     shuffle: bool = True
 
 
@@ -60,7 +60,7 @@ def main():
     writer = SummaryWriter("runs/gpt")
 
     # Load tokenizer
-    tokenizer = Tokenizer.load("toy_data/python_book")
+    tokenizer = Tokenizer.load("toy_data/wiki_text_2")
 
     # Model configuration
     model_config = ModelConfig()
@@ -68,15 +68,15 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(),
-                           lr=0.001,
+                           lr=0.0001,
                            betas=(0.9, 0.98),
                            eps=1e-9)
 
     # Load data and create DataLoader
-    with open("toy_data/python_book.txt", encoding="utf-8") as f:
+    with open("toy_data/train.txt", encoding="utf-8") as f:
         data = f.read()
 
-    with open("toy_data/python_book_eval.txt", encoding="utf-8") as f:
+    with open("toy_data/test.txt", encoding="utf-8") as f:
         data_eval = f.read()
 
     dataset_config = DatasetConfig()
@@ -111,14 +111,14 @@ def main():
         eval_loss = evaluate(model, criterion, eval_loader,
                              model_config.tgt_vocab_size)
         print(
-            f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}"
+            f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}\n"
         )
         if epoch % 5 == 0 and epoch != 0:
             torch.save(model.state_dict(), f'gpt_epoch_{epoch}.pth')
             print('Model saved!')
 
-        writer.add_scalar("train_loss", train_loss, epoch)
-        writer.add_scalar("eval_loss", eval_loss, epoch)
+        writer.add_scalar("Loss/train", train_loss, epoch)
+        writer.add_scalar("Loss/eval", eval_loss, epoch)
     writer.flush()
     return writer
 

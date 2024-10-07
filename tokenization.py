@@ -32,6 +32,7 @@ class Tokenizer:
             for k, v in self.SPECIAL_TOKENS.items()
         })
         self.merges = {}
+        self._stats_cache = {}
 
     def get_stats(self,
                   tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
@@ -47,6 +48,24 @@ class Tokenizer:
         for pair in zip(tokens, tokens[1:]):
             counts[pair] = counts.get(pair, 0) + 1
         return counts
+
+    def get_stats_with_memoization(
+            self, tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
+        """Computes the frequency of each pair of consecutive tokens, using memoization for caching results.
+
+        Args:
+            tokens (List[Tuple[int, int]]): The list of token pairs.
+
+        Returns:
+            Dict[Tuple[int, int], int]: A dictionary with token pairs as keys and their frequencies as values.
+        """
+        tuple_tokens = tuple(tokens)
+        if tuple_tokens in self._stats_cache:
+            return self._stats_cache[tuple_tokens]
+
+        stats = self.get_stats(tokens)
+        self._stats_cache[tuple_tokens] = stats
+        return stats
 
     def merge_tokens(self, tokens: List[Tuple[int, int]],
                      pair: Tuple[int, int], idx) -> List[Tuple[int, int]]:
@@ -81,6 +100,7 @@ class Tokenizer:
         Returns:
             List[int]: The list of token IDs.
         """
+        print("encoding text...")
         tokens = list(text.encode("utf-8"))
         while len(tokens) >= 2:
             stats = self.get_stats(tokens)
@@ -178,15 +198,17 @@ class Tokenizer:
 # Example usage
 if __name__ == "__main__":
     print("loading data...")
-    with open("toy_data/train.txt", encoding="utf-8") as f:
-        text = f.read()
+    TRAIN = False
+    if TRAIN:
+        with open("toy_data/train.txt", encoding="utf-8") as f:
+            text = f.read()
 
-    print("training tokenizer...")
-    tokenizer = Tokenizer(vocab_size=8192)
-    tokenizer.train(text)
-    tokenizer.save("toy_data/wiki_text_2")
+        print("training tokenizer...")
+        tokenizer = Tokenizer(vocab_size=8192)
+        tokenizer.train(text)
+        tokenizer.save("toy_data/wiki_text_2")
 
-    loaded_tokenizer = Tokenizer.load("toy_data/python_book")
+    loaded_tokenizer = Tokenizer.load("toy_data/wiki_text_2")
 
     encoded = loaded_tokenizer.encode("Hello, world!")
     print(f"Encoded: {encoded}")
