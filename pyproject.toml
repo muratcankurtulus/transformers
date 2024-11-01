@@ -1,5 +1,10 @@
 [tool.codespell]
-skip="toy_data/*"
+skip = "toy_data/*"
 
-[tool.flake8]
-max-line-length = 120
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 120
+target-version = ['py311']

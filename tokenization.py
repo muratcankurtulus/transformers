@@ -7,8 +7,7 @@ from tqdm import tqdm
 
 
 class Tokenizer:
-    """A simple tokenizer class for encoding and decoding text using byte pair
-    encoding (BPE).
+    """A simple tokenizer class for encoding and decoding text using Byte Pair Encoding (BPE).
 
     Attributes:
         SPECIAL_TOKENS (Dict[str, int]): Special tokens with their corresponding IDs.
@@ -27,15 +26,11 @@ class Tokenizer:
         """
         self.vocab_size = vocab_size
         self.vocab = {idx: bytes([idx]) for idx in range(256)}
-        self.vocab.update({
-            v: k.encode("utf-8")
-            for k, v in self.SPECIAL_TOKENS.items()
-        })
+        self.vocab.update({v: k.encode("utf-8") for k, v in self.SPECIAL_TOKENS.items()})
         self.merges = {}
         self._stats_cache = {}
 
-    def get_stats(self,
-                  tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
+    def get_stats(self, tokens: List[int]) -> Dict[Tuple[int, int], int]:
         """Computes the frequency of each pair of consecutive tokens.
 
         Args:
@@ -49,8 +44,7 @@ class Tokenizer:
             counts[pair] = counts.get(pair, 0) + 1
         return counts
 
-    def get_stats_with_memoization(
-            self, tokens: List[Tuple[int, int]]) -> Dict[Tuple[int, int], int]:
+    def get_stats_with_memoization(self, tokens: List[int]) -> Dict[Tuple[int, int], int]:
         """Computes the frequency of each pair of consecutive tokens, using memoization for caching results.
 
         Args:
@@ -67,8 +61,7 @@ class Tokenizer:
         self._stats_cache[tuple_tokens] = stats
         return stats
 
-    def merge_tokens(self, tokens: List[Tuple[int, int]],
-                     pair: Tuple[int, int], idx) -> List[Tuple[int, int]]:
+    def merge_tokens(self, tokens: List[int], pair: Tuple[int, int], idx: int) -> List[int]:
         """Merges a specific pair of tokens in the token list.
 
         Args:
@@ -100,7 +93,7 @@ class Tokenizer:
         Returns:
             List[int]: The list of token IDs.
         """
-        print("encoding text...")
+        # Encoding text
         tokens = list(text.encode("utf-8"))
         while len(tokens) >= 2:
             stats = self.get_stats(tokens)
@@ -120,8 +113,7 @@ class Tokenizer:
         Returns:
             List[int]: The list of token IDs with special tokens added.
         """
-        return [self.SPECIAL_TOKENS["<BOS>"]
-                ] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
+        return [self.SPECIAL_TOKENS["<BOS>"]] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
 
     def decode(self, tokens: List[int]) -> str:
         """Decodes a list of token IDs back into a string.
@@ -133,11 +125,11 @@ class Tokenizer:
             str: The decoded string.
         """
         tokens = [t for t in tokens if t not in self.SPECIAL_TOKENS.values()]
-        tokens = b"".join([self.vocab[t] for t in tokens])
-        text = tokens.decode("utf-8", errors="replace")
+        token_bytes = b"".join([self.vocab[t] for t in tokens])
+        text = token_bytes.decode("utf-8", errors="replace")
         return text
 
-    def train(self, text: str):
+    def train(self, text: str) -> None:
         """Trains the tokenizer on a given text to build the vocabulary and
         merge operations.
 
@@ -147,24 +139,23 @@ class Tokenizer:
         pat = re.compile(
             r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
         )
-        lits_of_text = re.findall(pat, text)
-        bytestrings = [item.encode("utf-8") for item in lits_of_text]
-        text = b"".join(bytestrings)
-        tokens = list(map(int, text))
+        list_of_text = re.findall(pat, text)
+        bytestrings = [item.encode("utf-8") for item in list_of_text]
+        text_bytes = b"".join(bytestrings)
+        tokens = list(map(int, text_bytes))
 
         copy_tokens = tokens.copy()
         num_merges = self.vocab_size - 256 - len(self.SPECIAL_TOKENS)
         for i in tqdm(range(num_merges)):
             stats = self.get_stats(copy_tokens)
             pair = max(stats, key=stats.get)
-            copy_tokens = self.merge_tokens(copy_tokens, pair,
-                                            256 + i + len(self.SPECIAL_TOKENS))
+            copy_tokens = self.merge_tokens(copy_tokens, pair, 256 + i + len(self.SPECIAL_TOKENS))
             self.merges[pair] = 256 + i + len(self.SPECIAL_TOKENS)
 
         for (a, b), idx in tqdm(self.merges.items()):
             self.vocab[idx] = self.vocab[a] + self.vocab[b]
 
-    def save(self, directory: str):
+    def save(self, directory: str) -> None:
         """Saves the tokenizer's vocabulary and merges to the specified
         directory.
 
@@ -177,7 +168,7 @@ class Tokenizer:
         joblib.dump(self.vocab, os.path.join(directory, "vocab"))
 
     @classmethod
-    def load(cls, directory: str) -> 'Tokenizer':
+    def load(cls, directory: str) -> "Tokenizer":
         """Loads the tokenizer's vocabulary and merges from the specified
         directory.
 

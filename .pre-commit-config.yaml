@@ -1,7 +1,7 @@
 # Define bot property if installed via https://github.com/marketplace/pre-commit-ci
 ci:
   autofix_prs: true
-  autoupdate_commit_msg: '[pre-commit.ci] pre-commit suggestions'
+  autoupdate_commit_msg: "[pre-commit.ci] pre-commit suggestions"
   autoupdate_schedule: monthly
   # submodules: true
 
@@ -31,13 +31,13 @@ repos:
       - id: isort
         name: Sort imports
 
-  - repo: https://github.com/google/yapf
-    rev: v0.40.2
+  - repo: https://github.com/psf/black
+    rev: 23.7.0
     hooks:
-      - id: yapf
-        name: YAPF formatting
+      - id: black
+        name: Black formatting
         args:
-          - -i
+          - --line-length=120
 
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.17
