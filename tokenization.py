@@ -189,17 +189,17 @@ class Tokenizer:
 # Example usage
 if __name__ == "__main__":
     print("loading data...")
-    TRAIN = False
+    TRAIN = True
     if TRAIN:
         with open("toy_data/train.txt", encoding="utf-8") as f:
             text = f.read()
 
         print("training tokenizer...")
-        tokenizer = Tokenizer(vocab_size=8192)
+        tokenizer = Tokenizer(vocab_size=384)
         tokenizer.train(text)
-        tokenizer.save("toy_data/wiki_text_2")
+        tokenizer.save("toy_data/tiny_sp")
 
-    loaded_tokenizer = Tokenizer.load("toy_data/wiki_text_2")
+    loaded_tokenizer = Tokenizer.load("toy_data/tiny_sp")
 
     encoded = loaded_tokenizer.encode("Hello, world!")
     print(f"Encoded: {encoded}")

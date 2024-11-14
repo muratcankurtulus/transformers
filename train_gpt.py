@@ -10,13 +10,12 @@ from tokenization import Tokenizer
 
 
 class ModelConfig(BaseModel):
-    embed_dim: int = 512
-    tgt_vocab_size: int = 8192
+    embed_dim: int = 384
+    tgt_vocab_size: int = 384 
     seq_len: int = 256
     num_layers: int = 4
     expansion_factor: int = 4
-    n_heads: int = 8
-
+    n_heads: int = 6
 
 class DatasetConfig(BaseModel):
     batch_size: int = 64
@@ -41,7 +40,7 @@ class Dataset(torch.utils.data.Dataset):
         tgt = self.data[idx + 1:idx + self.seq_len + 1]
         return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
 
-
+@torch.no_grad()
 def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
@@ -60,7 +59,7 @@ def main():
     writer = SummaryWriter("runs/gpt")
 
     # Load tokenizer
-    tokenizer = Tokenizer.load("toy_data/wiki_text_2")
+    tokenizer = Tokenizer.load("toy_data/tiny_sp")
 
     # Model configuration
     model_config = ModelConfig()
@@ -68,7 +67,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(),
-                           lr=0.0001,
+                           lr=0.00003,
                            betas=(0.9, 0.98),
                            eps=1e-9)
 
@@ -85,13 +84,14 @@ def main():
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle)
 
+    dataset_config.shuffle = False
     eval_loader = torch.utils.data.DataLoader(
         Dataset(data_eval, model_config.seq_len, tokenizer),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle)
 
     # Training loop
-    for epoch in range(500):
+    for epoch in range(1000):
         train_loss = 0
         model.train()
         with tqdm(train_loader, unit="batch") as tepoch:

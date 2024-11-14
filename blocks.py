@@ -75,13 +75,14 @@ class MultiHeadAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
+        self.do = nn.Dropout(.2)
 
         assert (self.head_dim * n_heads == embed_dim
                 ), "Embedding dimension must be divisible by number of heads"
 
-        self.q_linear = nn.Linear(embed_dim, embed_dim)
-        self.k_linear = nn.Linear(embed_dim, embed_dim)
-        self.v_linear = nn.Linear(embed_dim, embed_dim)
+        self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.out_linear = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, query, key, value, mask=None):
@@ -106,7 +107,9 @@ class MultiHeadAttention(nn.Module):
 
         attn_weights = F.softmax(
             scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
+        attn_weights = self.do(attn_weights)
         attn_output = attn_weights @ V  # (batch_size, n_heads, seq_len, head_dim)
+
 
         # Concatenate heads and put through final linear layer
         attn_output = attn_output.transpose(1, 2).contiguous().view(
@@ -283,6 +286,7 @@ class GPTDecoder(nn.Module):
         ])
 
         self.fully_connected = nn.Linear(embed_dim, target_vocab_size)
+        self.norm = nn.LayerNorm(embed_dim)
         self.do = nn.Dropout(.2)
 
     def forward(self, x, mask):
@@ -292,6 +296,7 @@ class GPTDecoder(nn.Module):
 
         for layer in self.layers:
             x = layer(x, mask)
-
+        
+        x = self.norm(x)
         out = self.fully_connected(x)
         return out
