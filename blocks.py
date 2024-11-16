@@ -70,12 +70,13 @@ class MultiHeadAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
+        self.do = nn.Dropout(.2)
 
         assert self.head_dim * n_heads == embed_dim, "Embedding dimension must be divisible by number of heads"
 
-        self.q_linear = nn.Linear(embed_dim, embed_dim)
-        self.k_linear = nn.Linear(embed_dim, embed_dim)
-        self.v_linear = nn.Linear(embed_dim, embed_dim)
+        self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.out_linear = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, query, key, value, mask=None):
@@ -97,8 +98,9 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             scores.masked_fill_(mask, float("-inf"))  # Apply the mask
 
-        attn_weights = F.softmax(scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
-        attn_output = attn_weights @ V  # (batch_size, n_heads, seq_len, head_dim)
+        attn_weights = F.softmax(
+            scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
+        attn_weights = self.do(attn_weights)
 
         # Concatenate heads and put through final linear layer
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
@@ -243,11 +245,10 @@ class GPTDecoder(nn.Module):
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
         self.pos_enc = PositionalEncoding(seq_len, embed_dim)
-
         self.layers = nn.ModuleList([GPTDecoderBlock(embed_dim, expansion_factor, n_heads) for _ in range(num_layers)])
-
         self.fully_connected = nn.Linear(embed_dim, target_vocab_size)
-        self.do = nn.Dropout(0.2)
+        self.norm = nn.LayerNorm(embed_dim)
+        self.do = nn.Dropout(.2)
 
     def forward(self, x, mask):
         x = self.word_embedding(x)
@@ -256,6 +257,7 @@ class GPTDecoder(nn.Module):
 
         for layer in self.layers:
             x = layer(x, mask)
-
+        
+        x = self.norm(x)
         out = self.fully_connected(x)
         return out

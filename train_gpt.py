@@ -12,13 +12,12 @@ from tokenizer import Tokenizer
 
 
 class ModelConfig(BaseModel):
-    embed_dim: int = 512
-    tgt_vocab_size: int = 4096
+    embed_dim: int = 384
+    tgt_vocab_size: int = 384 
     seq_len: int = 256
     num_layers: int = 4
     expansion_factor: int = 4
-    n_heads: int = 8
-
+    n_heads: int = 6
 
 class DatasetConfig(BaseModel):
     batch_size: int = 64
@@ -42,7 +41,7 @@ class Dataset(torch.utils.data.Dataset):
         tgt = self.data[idx + 1 : idx + self.seq_len + 1]
         return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
 
-
+@torch.no_grad()
 def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
@@ -61,7 +60,9 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     writer = SummaryWriter(f"runs/{experiment_name}")
 
     # Load tokenizer
+
     tokenizer = Tokenizer.load(tokenizer_path)
+
 
     # Model configuration
     model_config = ModelConfig(
@@ -77,6 +78,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
 
+
     # Load data and create DataLoader
     with open(train_data_path, encoding="utf-8") as f:
         data = f.read()
@@ -91,6 +93,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         shuffle=dataset_config.shuffle,
     )
 
+    dataset_config.shuffle = False
     eval_loader = torch.utils.data.DataLoader(
         Dataset(data_eval, model_config.seq_len, tokenizer),
         batch_size=dataset_config.batch_size,
