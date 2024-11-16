@@ -29,18 +29,18 @@ class Dataset(torch.utils.data.Dataset):
     def __init__(self, data, seq_len, tokenizer):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
-        self.data = self.tokenizer.encode(data)
+        self.data = torch.tensor(self.tokenizer.encode(data))
+        # Pre-calculate valid indices
+        self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
 
     def __len__(self):
-        return len(self.data)
+        return len(self.valid_indices)
 
     def __getitem__(self, idx):
-        if idx + self.seq_len + 1 > len(self.data):
-            idx = 0
-
-        src = self.data[idx : idx + self.seq_len]
-        tgt = self.data[idx + 1 : idx + self.seq_len + 1]
-        return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
+        real_idx = self.valid_indices[idx]
+        src = self.data[real_idx : real_idx + self.seq_len]
+        tgt = self.data[real_idx + 1 : real_idx + self.seq_len + 1]
+        return src, tgt
 
 
 @torch.no_grad()
@@ -74,6 +74,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         n_heads=args.n_heads,
     )
     model = GPT(**model_config.model_dump()).to("cuda")
+    #    model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=4e-4, betas=(0.9, 0.98), eps=1e-9, weight_decay=0.1)
@@ -90,6 +91,8 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         Dataset(data, model_config.seq_len, tokenizer),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
+        num_workers=4,
+        pin_memory=True,
     )
 
     dataset_config.shuffle = False
@@ -97,6 +100,8 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         Dataset(data_eval, model_config.seq_len, tokenizer),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
+        num_workers=4,
+        pin_memory=True,
     )
 
     # Training loop
@@ -105,8 +110,9 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         model.train()
         with tqdm(train_loader, unit="batch") as tepoch:
             for src, tgt in tepoch:
-                mask = model.make_tgt_mask(tgt).to("cuda")
-                optimizer.zero_grad()
+                src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
+                mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
                 output = model(src, mask)
                 loss = criterion(output.view(-1, model_config.tgt_vocab_size), tgt.view(-1))
                 loss.backward()
