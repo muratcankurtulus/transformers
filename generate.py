@@ -1,28 +1,27 @@
+import argparse
+
 import torch
-from pydantic import BaseModel
 
 from gpt import GPT
-from tokenization import Tokenizer
+from tokenizer import Tokenizer
+from train_gpt import ModelConfig
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="GPT generate")
+    parser.add_argument("--prompt", type=str, help="Prompt to generate text from", required=True)
+    parser.add_argument("--model_path", type=str, help="Path to model checkpoint", required=True)
+    parser.add_argument("--length", type=int, default=100, help="Length of generated text")
+    parser.add_argument("--tokenizer_path", type=str, help="Path to vocab file", required=True)
+    parser.add_argument("--vocab_size", type=int, help="Vocab size", required=True)
+    args = parser.parse_args()
 
-class ModelConfig(BaseModel):
-    embed_dim: int = 32
-    tgt_vocab_size: int = 512
-    seq_len: int = 256
-    num_layers: int = 2
-    expansion_factor: int = 2
-    n_heads: int = 2
+    model_config = ModelConfig()
+    model = GPT(**model_config.model_dump()).to("cuda")
+    model.eval()
 
-
-state_dict = torch.load('./gpt_epoch_80.pth')
-model_config = ModelConfig()
-model = GPT(**model_config.dict()).to("cuda")
-tokenizer = Tokenizer.load("toy_data/python_book")
-model.load_state_dict(state_dict)
-model.eval()
-
-string = "python is "
-input_ids = tokenizer.encode(string)
-generated = model.generate(input_ids, 200)
-generated = generated.cpu().tolist()
-print(tokenizer.decode(generated[0]))
+    tokenizer = Tokenizer.load(args.tokenizer_path)
+    model.load_state_dict(torch.load(args.model_path))
+    prompt = tokenizer.encode(args.prompt)
+    generated = model.generate(prompt, args.length)
+    generated_text = tokenizer.decode(generated)
+    print(generated_text)
