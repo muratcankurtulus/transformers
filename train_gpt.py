@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from gpt import GPT
@@ -59,8 +58,6 @@ def evaluate(model, criterion, eval_loader, vocab_size):
 
 
 def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name):
-    writer = SummaryWriter(f"runs/{experiment_name}")
-
     # Load tokenizer
     tokenizer = Tokenizer.load(tokenizer_path)
 
@@ -117,34 +114,17 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
                 loss = criterion(output.view(-1, model_config.tgt_vocab_size), tgt.view(-1))
                 loss.backward()
                 optimizer.step()
-
                 # Log learning rate
-                for param_group in optimizer.param_groups:
-                    writer.add_scalar("Learning Rate", param_group["lr"], epoch * len(train_loader) + tepoch.n)
-
-                # Log gradients
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        writer.add_histogram(f"Gradients/{name}", param.grad, epoch * len(train_loader) + tepoch.n)
                 tepoch.set_postfix(loss=f"{loss.item():.4f}")
                 train_loss += loss.item()
 
             train_loss /= len(train_loader)
-
-        # Log model parameters
-        for name, param in model.named_parameters():
-            writer.add_histogram(f"Parameters/{name}", param, epoch)
 
         eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
         print(f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}\n")
         if epoch % 5 == 0 and epoch != 0:
             torch.save(model.state_dict(), f"{experiment_name}_e{epoch}.pth")
             print("Model saved!")
-
-        writer.add_scalar("Loss/train", train_loss, epoch)
-        writer.add_scalar("Loss/eval", eval_loss, epoch)
-    writer.flush()
-    return writer
 
 
 if __name__ == "__main__":
@@ -209,5 +189,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    writer = main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name)
-    writer.close()
+    main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name)
