@@ -13,11 +13,12 @@ from tokenizer import Tokenizer
 
 class ModelConfig(BaseModel):
     embed_dim: int = 384
-    tgt_vocab_size: int = 384 
+    tgt_vocab_size: int = 384
     seq_len: int = 256
-    num_layers: int = 4
-    expansion_factor: int = 4
-    n_heads: int = 6
+    num_layers: int = 3
+    expansion_factor: int = 2
+    n_heads: int = 3
+
 
 class DatasetConfig(BaseModel):
     batch_size: int = 64
@@ -41,6 +42,7 @@ class Dataset(torch.utils.data.Dataset):
         tgt = self.data[idx + 1 : idx + self.seq_len + 1]
         return torch.tensor(src).to("cuda"), torch.tensor(tgt).to("cuda")
 
+
 @torch.no_grad()
 def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
@@ -60,9 +62,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     writer = SummaryWriter(f"runs/{experiment_name}")
 
     # Load tokenizer
-
     tokenizer = Tokenizer.load(tokenizer_path)
-
 
     # Model configuration
     model_config = ModelConfig(
@@ -76,8 +76,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     model = GPT(**model_config.model_dump()).to("cuda")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.98), eps=1e-9)
-
+    optimizer = optim.Adam(model.parameters(), lr=4e-4, betas=(0.9, 0.98), eps=1e-9, weight_decay=0.1)
 
     # Load data and create DataLoader
     with open(train_data_path, encoding="utf-8") as f:
@@ -143,20 +142,64 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
 
 
 if __name__ == "__main__":
+    model_config = ModelConfig()
+    dataset_config = DatasetConfig()
+
     parser = argparse.ArgumentParser(description="Train GPT model")
-    parser.add_argument("--tokenizer", type=str, help="Path to the tokenizer")
-    parser.add_argument("--train_data", type=str, help="Path to the training data")
-    parser.add_argument("--eval_data", type=str, help="Path to the evaluation data")
+    parser.add_argument("--tokenizer", default="./toy_data/tiny_sp", type=str, help="Path to the tokenizer")
+    parser.add_argument(
+        "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data"
+    )
+    parser.add_argument(
+        "--eval_data", default="./toy_data/tiny_sp_test.txt", type=str, help="Path to the evaluation data"
+    )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs (default: 100)")
-    parser.add_argument("--embed_dim", type=int, default=512, help="Embedding dimension (default: 512)")
-    parser.add_argument("--tgt_vocab_size", type=int, default=4096, help="Target vocabulary size (default: 4096)")
-    parser.add_argument("--seq_len", type=int, default=256, help="Sequence length (default: 256)")
-    parser.add_argument("--num_layers", type=int, default=4, help="Number of layers (default: 4)")
-    parser.add_argument("--expansion_factor", type=int, default=4, help="Expansion factor (default: 4)")
-    parser.add_argument("--n_heads", type=int, default=8, help="Number of attention heads (default: 8)")
+    parser.add_argument(
+        "--embed_dim",
+        type=int,
+        default=model_config.embed_dim,
+        help=f"Embedding dimension (default: {model_config.embed_dim})",
+    )
+    parser.add_argument(
+        "--tgt_vocab_size",
+        type=int,
+        default=model_config.tgt_vocab_size,
+        help=f"Target vocabulary size (default: {model_config.tgt_vocab_size})",
+    )
+    parser.add_argument(
+        "--seq_len", type=int, default=model_config.seq_len, help=f"Sequence length (default: {model_config.seq_len})"
+    )
+    parser.add_argument(
+        "--num_layers",
+        type=int,
+        default=model_config.num_layers,
+        help=f"Number of layers (default: {model_config.num_layers})",
+    )
+    parser.add_argument(
+        "--expansion_factor",
+        type=int,
+        default=model_config.expansion_factor,
+        help=f"Expansion factor (default: {model_config.expansion_factor})",
+    )
+    parser.add_argument(
+        "--n_heads",
+        type=int,
+        default=model_config.n_heads,
+        help=f"Number of attention heads (default: {model_config.n_heads})",
+    )
     parser.add_argument("--experiment_name", type=str, help="Name of the experiment")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training (default: 64)")
-    parser.add_argument("--shuffle", type=bool, default=True, help="Shuffle the dataset (default: True)")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=dataset_config.batch_size,
+        help=f"Batch size for training (default: {dataset_config.batch_size})",
+    )
+    parser.add_argument(
+        "--shuffle",
+        type=bool,
+        default=dataset_config.shuffle,
+        help=f"Shuffle the dataset (default: {dataset_config.shuffle})",
+    )
 
     args = parser.parse_args()
 
