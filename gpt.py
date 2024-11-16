@@ -1,3 +1,5 @@
+from typing import List, Union
+
 import torch
 import torch.nn as nn
 
@@ -5,7 +7,6 @@ from blocks import GPTDecoder
 
 
 class GPT(nn.Module):
-
     def __init__(
         self,
         tgt_vocab_size: int,
@@ -28,8 +29,7 @@ class GPT(nn.Module):
         """
         super().__init__()
 
-        self.decoder = GPTDecoder(tgt_vocab_size, embed_dim, seq_len,
-                                  num_layers, expansion_factor, n_heads)
+        self.decoder = GPTDecoder(tgt_vocab_size, embed_dim, seq_len, num_layers, expansion_factor, n_heads)
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """
@@ -41,12 +41,11 @@ class GPT(nn.Module):
         Returns:
             torch.Tensor: Target mask tensor.
         """
-        bs, seq_len = tgt.shape
+        _, seq_len = tgt.shape
         tgt_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
         return tgt_mask.to("cuda")
 
-    def generate(self, input_ids: torch.Tensor,
-                 max_length: int) -> torch.Tensor:
+    def generate(self, input_ids: Union[List[int], torch.Tensor], max_length: int) -> torch.Tensor:
         """
         Generate a sequence of tokens.
 
@@ -62,9 +61,6 @@ class GPT(nn.Module):
             input_ids = torch.tensor(input_ids).unsqueeze(0).to("cuda")
         else:
             input_ids = input_ids.to("cuda")
-        self.eval()
-        if isinstance(input_ids, list):
-            input_ids = torch.tensor(input_ids).unsqueeze(0)
 
         generated = input_ids.clone().to("cuda")
         with torch.no_grad():
