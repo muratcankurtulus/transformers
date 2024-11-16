@@ -47,13 +47,13 @@ def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
     with tqdm(eval_loader, unit="batch") as tepoch:
-        with torch.no_grad():
-            for src, tgt in tepoch:
-                mask = model.make_tgt_mask(tgt).to("cuda")
-                output = model(src, mask)
-                loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
-                total_loss += loss.item()
-                tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
+        for src, tgt in tepoch:
+            src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
+            mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
+            output = model(src, mask)
+            loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
+            total_loss += loss.item()
+            tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
     return total_loss / len(eval_loader)
 
 
