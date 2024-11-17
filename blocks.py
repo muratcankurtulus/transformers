@@ -91,13 +91,10 @@ class MultiHeadAttention(nn.Module):
         Q = Q.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
         K = K.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
         V = V.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
-
         # Scaled dot-product attention
         scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (batch_size, n_heads, seq_len, seq_len)
-
         if mask is not None:
             scores.masked_fill_(mask, float("-inf"))  # Apply the mask
-
         attn_weights = F.softmax(scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
         attn_weights = self.do(attn_weights)
         attn_output = attn_weights @ V

@@ -1,5 +1,6 @@
 import argparse
 
+import tiktoken
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -12,7 +13,7 @@ from tokenizer import Tokenizer
 
 class ModelConfig(BaseModel):
     embed_dim: int = 384
-    tgt_vocab_size: int = 384
+    tgt_vocab_size: int = 100277
     seq_len: int = 256
     num_layers: int = 3
     expansion_factor: int = 2
@@ -20,17 +21,24 @@ class ModelConfig(BaseModel):
 
 
 class DatasetConfig(BaseModel):
-    batch_size: int = 64
+    batch_size: int = 16
     shuffle: bool = True
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, seq_len, tokenizer):
+    def __init__(self, data, seq_len, tokenizer, tokenizer_type="tiktoken"):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
-        self.data = torch.tensor(self.tokenizer.encode(data))
+
+        if tokenizer_type == "tiktoken":
+            encoded_data = self.tokenizer.encode(data, allowed_special="all")
+        else:
+            encoded_data = self.tokenizer.encode(data)
+
+        self.data = torch.tensor(encoded_data)
         # Pre-calculate valid indices
         self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
+        print(len(self.valid_indices))
 
     def __len__(self):
         return len(self.valid_indices)
@@ -57,9 +65,12 @@ def evaluate(model, criterion, eval_loader, vocab_size):
     return total_loss / len(eval_loader)
 
 
-def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name):
+def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name, tokenizer_type):
     # Load tokenizer
-    tokenizer = Tokenizer.load(tokenizer_path)
+    if tokenizer_type == "tiktoken":
+        tokenizer = tiktoken.get_encoding("cl100k_base")  # or another model like "p50k_base"
+    elif tokenizer_type == "default":
+        tokenizer = Tokenizer.load(tokenizer_path)
 
     # Model configuration
     model_config = ModelConfig(
@@ -85,7 +96,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
 
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
     train_loader = torch.utils.data.DataLoader(
-        Dataset(data, model_config.seq_len, tokenizer),
+        Dataset(data, model_config.seq_len, tokenizer, tokenizer_type),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
@@ -94,7 +105,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
 
     dataset_config.shuffle = False
     eval_loader = torch.utils.data.DataLoader(
-        Dataset(data_eval, model_config.seq_len, tokenizer),
+        Dataset(data_eval, model_config.seq_len, tokenizer, tokenizer_type),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
@@ -132,7 +143,19 @@ if __name__ == "__main__":
     dataset_config = DatasetConfig()
 
     parser = argparse.ArgumentParser(description="Train GPT model")
-    parser.add_argument("--tokenizer", default="./toy_data/tiny_sp", type=str, help="Path to the tokenizer")
+    parser.add_argument(
+        "--tokenizer",
+        default="./toy_data/tiny_sp",
+        type=str,
+        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
+    )
+    parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        default="tiktoken",
+        choices=["default", "tiktoken"],
+        help="Type of tokenizer to use (default: sentencepiece)",
+    )
     parser.add_argument(
         "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data"
     )
@@ -189,4 +212,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name)
+    main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name, args.tokenizer_type)
