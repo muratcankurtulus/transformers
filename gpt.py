@@ -42,7 +42,7 @@ class GPT(nn.Module):
             torch.Tensor: Target mask tensor.
         """
         _, seq_len = tgt.shape
-        tgt_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+        tgt_mask = torch.tril(torch.ones(seq_len, seq_len), diagonal=1).bool()
         return tgt_mask.to("cuda")
 
     def generate(self, input_ids: Union[List[int], torch.Tensor], max_length: int) -> torch.Tensor:
