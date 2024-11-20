@@ -65,12 +65,13 @@ class PositionalEncoding(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads, dropout_rate=0.3):
+    def __init__(self, embed_dim, n_heads, dropout_rate=0.2):
         super().__init__()
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
-        self.do = nn.Dropout(dropout_rate)
+        self.do_0 = nn.Dropout(dropout_rate)
+        self.do_1 = nn.Dropout(dropout_rate)
 
         assert self.head_dim * n_heads == embed_dim, "Embedding dimension must be divisible by number of heads"
 
@@ -96,17 +97,66 @@ class MultiHeadAttention(nn.Module):
         if mask is not None:
             scores.masked_fill_(mask, float("-inf"))  # Apply the mask
         attn_weights = F.softmax(scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
-        attn_weights = self.do(attn_weights)
+        attn_weights = self.do_0(attn_weights)
         attn_output = attn_weights @ V
         # Concatenate heads and put through final linear layer
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
-        output = self.out_linear(attn_output)
+        output = self.do_1(self.out_linear(attn_output))
 
         return output
 
 
+class GPTDecoderBlock(nn.Module):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.2):
+        super().__init__()
+
+        self.attention = MultiHeadAttention(embed_dim, n_heads, dropout_rate)
+        self.norm_0 = nn.LayerNorm(embed_dim)
+        self.norm_1 = nn.LayerNorm(embed_dim)
+        self.ffn = nn.Sequential(
+            nn.Linear(embed_dim, expansion_factor * embed_dim),
+            nn.ReLU(),
+            nn.Linear(expansion_factor * embed_dim, embed_dim),
+            nn.Dropout(dropout_rate),
+        )
+
+    def forward(self, x, mask):
+        att = self.attention(x, x, x, mask)
+        add_and_norm = self.norm_0(att + x)
+        ffn_out = self.ffn(add_and_norm)
+        out = self.norm_1(ffn_out + add_and_norm)
+        return out
+
+
+class GPTDecoder(nn.Module):
+    def __init__(
+        self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8, dropout_rate=0.2
+    ):
+        super().__init__()
+
+        self.word_embedding = Embedding(target_vocab_size, embed_dim)
+        self.embed_dropout = nn.Dropout(dropout_rate)
+        self.pos_enc = PositionalEncoding(seq_len, embed_dim)
+        self.layers = nn.ModuleList(
+            [GPTDecoderBlock(embed_dim, expansion_factor, n_heads, dropout_rate) for _ in range(num_layers)]
+        )
+        self.fully_connected = nn.Linear(embed_dim, target_vocab_size)
+        self.norm = nn.LayerNorm(embed_dim)
+
+    def forward(self, x, mask):
+        x = self.word_embedding(x)
+        x = self.pos_enc(x)
+
+        for layer in self.layers:
+            x = layer(x, mask)
+
+        x = self.norm(x)
+        out = self.fully_connected(x)
+        return out
+
+
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.3):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.2):
         """
         Parameters:
             embed_dim: dimension of the embedding vector
@@ -125,8 +175,8 @@ class TransformerEncoderBlock(nn.Module):
             nn.Linear(expansion_factor * embed_dim, embed_dim),
         )
 
-        self.dropout1 = nn.Dropout(0.2)
-        self.dropout2 = nn.Dropout(0.2)
+        self.dropout1 = nn.Dropout(dropout_rate)
+        self.dropout2 = nn.Dropout(dropout_rate)
 
     def forward(self, key, query, value):
         attention = self.attention(key, query, value)  # 32x10x512
@@ -171,12 +221,12 @@ class TransformerEncoder(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.3):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.2):
         super().__init__()
 
         self.attention = MultiHeadAttention(embed_dim, n_heads, dropout_rate)
         self.norm = nn.LayerNorm(embed_dim)
-        self.do = nn.Dropout(0.2)
+        self.do = nn.Dropout(dropout_rate)
         self.encoder_block = TransformerEncoderBlock(embed_dim, expansion_factor, n_heads)
 
     def forward(self, key, x, value, mask):
@@ -187,7 +237,9 @@ class TransformerDecoderBlock(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8):
+    def __init__(
+        self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8, dropout_rate=0.2
+    ):
         super().__init__()
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
@@ -198,7 +250,7 @@ class TransformerDecoder(nn.Module):
         )
 
         self.fully_connected = nn.Linear(embed_dim, target_vocab_size)
-        self.do = nn.Dropout(0.2)
+        self.do = nn.Dropout(dropout_rate)
 
     def forward(self, x, enc_out, mask):
         x = self.word_embedding(x)
@@ -209,56 +261,4 @@ class TransformerDecoder(nn.Module):
             x = layer(enc_out, x, enc_out, mask)
 
         out = F.softmax(self.fully_connected(x))
-        return out
-
-
-class GPTDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, dropout_rate=0.3):
-        super().__init__()
-
-        self.attention = MultiHeadAttention(embed_dim, n_heads, dropout_rate)
-        self.norm_0 = nn.LayerNorm(embed_dim)
-        self.norm_1 = nn.LayerNorm(embed_dim)
-        self.do_0 = nn.Dropout(dropout_rate)
-        self.do_1 = nn.Dropout(dropout_rate)
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, expansion_factor * embed_dim),
-            nn.GELU(),
-            nn.Linear(expansion_factor * embed_dim, embed_dim),
-        )
-
-    def forward(self, x, mask):
-        att = self.attention(x, x, x, mask)
-        add_and_norm = self.do_0(self.norm_0(att + x))
-        ffn_out = self.ffn(add_and_norm)
-        out = self.do_1(self.norm_1(ffn_out + add_and_norm))
-        return out
-
-
-class GPTDecoder(nn.Module):
-    def __init__(
-        self, target_vocab_size, embed_dim, seq_len, num_layers=2, expansion_factor=4, n_heads=8, dropout_rate=0.3
-    ):
-        super().__init__()
-
-        self.word_embedding = Embedding(target_vocab_size, embed_dim)
-        self.embed_dropout = nn.Dropout(dropout_rate)
-        self.pos_enc = PositionalEncoding(seq_len, embed_dim)
-        self.layers = nn.ModuleList(
-            [GPTDecoderBlock(embed_dim, expansion_factor, n_heads, dropout_rate) for _ in range(num_layers)]
-        )
-        self.fully_connected = nn.Linear(embed_dim, target_vocab_size)
-        self.norm = nn.LayerNorm(embed_dim)
-        self.do = nn.Dropout(dropout_rate)
-
-    def forward(self, x, mask):
-        x = self.word_embedding(x)
-        x = self.pos_enc(x)
-        x = self.do(x)
-
-        for layer in self.layers:
-            x = layer(x, mask)
-
-        x = self.norm(x)
-        out = self.fully_connected(x)
         return out

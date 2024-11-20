@@ -13,20 +13,20 @@ from tokenizer import Tokenizer
 
 class ModelConfig(BaseModel):
     embed_dim: int = 384
-    tgt_vocab_size: int = 100277
+    tgt_vocab_size: int = 384
     seq_len: int = 256
-    num_layers: int = 3
-    expansion_factor: int = 2
-    n_heads: int = 3
+    num_layers: int = 6
+    expansion_factor: int = 4
+    n_heads: int = 6
 
 
 class DatasetConfig(BaseModel):
-    batch_size: int = 16
+    batch_size: int = 64
     shuffle: bool = True
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, seq_len, tokenizer, tokenizer_type="tiktoken"):
+    def __init__(self, data, seq_len, tokenizer, tokenizer_type):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
 
@@ -82,10 +82,11 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         n_heads=args.n_heads,
     )
     model = GPT(**model_config.model_dump()).to("cuda")
+    print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
     #    model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=4e-4, betas=(0.9, 0.98), eps=1e-9, weight_decay=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-9)
 
     # Load data and create DataLoader
     with open(train_data_path, encoding="utf-8") as f:
@@ -152,7 +153,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokenizer_type",
         type=str,
-        default="tiktoken",
+        default="default",
         choices=["default", "tiktoken"],
         help="Type of tokenizer to use (default: sentencepiece)",
     )
