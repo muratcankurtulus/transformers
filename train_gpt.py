@@ -1,10 +1,10 @@
 import argparse
 
+import tiktoken
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from gpt import GPT
@@ -15,9 +15,9 @@ class ModelConfig(BaseModel):
     embed_dim: int = 384
     tgt_vocab_size: int = 384
     seq_len: int = 256
-    num_layers: int = 3
-    expansion_factor: int = 2
-    n_heads: int = 3
+    num_layers: int = 6
+    expansion_factor: int = 4
+    n_heads: int = 6
 
 
 class DatasetConfig(BaseModel):
@@ -26,12 +26,19 @@ class DatasetConfig(BaseModel):
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, seq_len, tokenizer):
+    def __init__(self, data, seq_len, tokenizer, tokenizer_type):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
-        self.data = torch.tensor(self.tokenizer.encode(data))
+
+        if tokenizer_type == "tiktoken":
+            encoded_data = self.tokenizer.encode(data, allowed_special="all")
+        else:
+            encoded_data = self.tokenizer.encode(data)
+
+        self.data = torch.tensor(encoded_data)
         # Pre-calculate valid indices
         self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
+        print(len(self.valid_indices))
 
     def __len__(self):
         return len(self.valid_indices)
@@ -48,21 +55,22 @@ def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
     with tqdm(eval_loader, unit="batch") as tepoch:
-        with torch.no_grad():
-            for src, tgt in tepoch:
-                mask = model.make_tgt_mask(tgt).to("cuda")
-                output = model(src, mask)
-                loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
-                total_loss += loss.item()
-                tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
+        for src, tgt in tepoch:
+            src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
+            mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
+            output = model(src, mask)
+            loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
+            total_loss += loss.item()
+            tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
     return total_loss / len(eval_loader)
 
 
-def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name):
-    writer = SummaryWriter(f"runs/{experiment_name}")
-
+def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name, tokenizer_type):
     # Load tokenizer
-    tokenizer = Tokenizer.load(tokenizer_path)
+    if tokenizer_type == "tiktoken":
+        tokenizer = tiktoken.get_encoding("cl100k_base")  # or another model like "p50k_base"
+    elif tokenizer_type == "default":
+        tokenizer = Tokenizer.load(tokenizer_path)
 
     # Model configuration
     model_config = ModelConfig(
@@ -74,10 +82,11 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
         n_heads=args.n_heads,
     )
     model = GPT(**model_config.model_dump()).to("cuda")
+    print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
     #    model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=4e-4, betas=(0.9, 0.98), eps=1e-9, weight_decay=0.1)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-9)
 
     # Load data and create DataLoader
     with open(train_data_path, encoding="utf-8") as f:
@@ -88,7 +97,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
 
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
     train_loader = torch.utils.data.DataLoader(
-        Dataset(data, model_config.seq_len, tokenizer),
+        Dataset(data, model_config.seq_len, tokenizer, tokenizer_type),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
@@ -97,7 +106,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
 
     dataset_config.shuffle = False
     eval_loader = torch.utils.data.DataLoader(
-        Dataset(data_eval, model_config.seq_len, tokenizer),
+        Dataset(data_eval, model_config.seq_len, tokenizer, tokenizer_type),
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
@@ -117,23 +126,11 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
                 loss = criterion(output.view(-1, model_config.tgt_vocab_size), tgt.view(-1))
                 loss.backward()
                 optimizer.step()
-
                 # Log learning rate
-                for param_group in optimizer.param_groups:
-                    writer.add_scalar("Learning Rate", param_group["lr"], epoch * len(train_loader) + tepoch.n)
-
-                # Log gradients
-                for name, param in model.named_parameters():
-                    if param.grad is not None:
-                        writer.add_histogram(f"Gradients/{name}", param.grad, epoch * len(train_loader) + tepoch.n)
                 tepoch.set_postfix(loss=f"{loss.item():.4f}")
                 train_loss += loss.item()
 
             train_loss /= len(train_loader)
-
-        # Log model parameters
-        for name, param in model.named_parameters():
-            writer.add_histogram(f"Parameters/{name}", param, epoch)
 
         eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
         print(f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}\n")
@@ -141,18 +138,25 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
             torch.save(model.state_dict(), f"{experiment_name}_e{epoch}.pth")
             print("Model saved!")
 
-        writer.add_scalar("Loss/train", train_loss, epoch)
-        writer.add_scalar("Loss/eval", eval_loss, epoch)
-    writer.flush()
-    return writer
-
 
 if __name__ == "__main__":
     model_config = ModelConfig()
     dataset_config = DatasetConfig()
 
     parser = argparse.ArgumentParser(description="Train GPT model")
-    parser.add_argument("--tokenizer", default="./toy_data/tiny_sp", type=str, help="Path to the tokenizer")
+    parser.add_argument(
+        "--tokenizer",
+        default="./toy_data/tiny_sp",
+        type=str,
+        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
+    )
+    parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        default="default",
+        choices=["default", "tiktoken"],
+        help="Type of tokenizer to use (default: sentencepiece)",
+    )
     parser.add_argument(
         "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data"
     )
@@ -209,5 +213,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    writer = main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name)
-    writer.close()
+    main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name, args.tokenizer_type)
