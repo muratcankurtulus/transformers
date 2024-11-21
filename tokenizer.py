@@ -125,7 +125,7 @@ class Tokenizer:
         Returns:
             str: The decoded string.
         """
-        token_list = [int(t.item()) for t in tokens if t not in self.SPECIAL_TOKENS.values()]
+        token_list = [int(t.item()) for t in tokens.squeeze() if t not in self.SPECIAL_TOKENS.values()]
         token_bytes = b"".join([self.vocab[t] for t in token_list])
         text = token_bytes.decode("utf-8", errors="replace")
         return text

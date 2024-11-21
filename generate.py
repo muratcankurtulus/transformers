@@ -15,7 +15,7 @@ if __name__ == "__main__":
     parser.add_argument("--vocab_size", type=int, help="Vocab size", required=True)
     args = parser.parse_args()
 
-    model_config = ModelConfig()
+    model_config = ModelConfig(embed_dim=160, n_heads=2, num_layers=3)
     model = GPT(**model_config.model_dump()).to("cuda")
     model.eval()
 
