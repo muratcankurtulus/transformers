@@ -11,7 +11,7 @@ This project trains a GPT model using PyTorch to process text data. It includes 
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.10+
 - Dependencies:
   - `torch`
   - `tqdm`
@@ -20,7 +20,9 @@ This project trains a GPT model using PyTorch to process text data. It includes 
   - `tensorboard`
 
 Install dependencies using `pip`:
-`bash pip install torch torchvision pydantic tqdm tensorboard `
+```bash 
+pip install torch torchvision pydantic tqdm tensorboard
+```
 
 ## File Structure
 
@@ -52,7 +54,9 @@ Install dependencies using `pip`:
 
 ### Running the Training Script
 
-`bash python train.py \ --tokenizer ./path/to/tokenizer \ --train_data ./path/to/train.txt \ --eval_data ./path/to/eval.txt \ --epochs 50 \ --experiment_name my_experiment `
+```
+python train.py --tokenizer ./path/to/tokenizer --train_data ./path/to/train.txt --eval_data ./path/to/eval.txt --epochs 50 --experiment_name my_experiment
+```
 
 ### Output
 
@@ -62,7 +66,7 @@ Install dependencies using `pip`:
 ### TensorBoard Visualization
 
 Start TensorBoard:
-`bash tensorboard --logdir=runs `
+``` tensorboard --logdir=runs```
 Open [http://localhost:6006](http://localhost:6006) in your browser to monitor training.
 
 ## Configurations
@@ -87,7 +91,7 @@ Open [http://localhost:6006](http://localhost:6006) in your browser to monitor t
 
 ## Customization
 
-You can modify `gpt.py` or `tokenizer.py` to use a different model architecture or tokenizer as needed.
+You can modify `gpt.py` or `tokenizer.py` and/or `tokenization.py` to use a different model architecture or tokenizer setup as needed.
 
 ## License
 
