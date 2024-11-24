@@ -6,7 +6,6 @@ This project trains a GPT model using PyTorch to process text data. It includes 
 
 - Implements a configurable GPT model using `torch.nn` for text sequence generation.
 - Utilizes `torch.utils.data` for efficient dataset management.
-- Includes logging with TensorBoard for monitoring training progress.
 - Supports dynamic configuration for model and dataset parameters using Pydantic.
 
 ## Requirements
@@ -16,8 +15,6 @@ This project trains a GPT model using PyTorch to process text data. It includes 
   - `torch`
   - `tqdm`
   - `pydantic`
-  - `torchvision`
-  - `tensorboard`
 
 Install dependencies using `pip`:
 ```bash 
@@ -26,11 +23,11 @@ pip install torch torchvision pydantic tqdm tensorboard
 
 ## File Structure
 
-- `blocks.py`: Defines the building blocks of the GPT model.
+- `blocks.py`: Defines the building blocks of the GPT model and Transformer model.
 - `gpt.py`: Defines the GPT model.
 - `tokenizer.py`: Defines Tokenizer class for encoding and decoding text.
 - `tokoenization.py`: Defines functions for tokenization and dataset preparation.
-- `train_gpt.py`: Main script for training and evaluation.
+- `train_gpt.py`: Main script for training and evaluation for GPT model.
 
 ## Usage
 
@@ -60,14 +57,7 @@ python train.py --tokenizer ./path/to/tokenizer --train_data ./path/to/train.txt
 
 ### Output
 
-- Logs are saved in the `runs/` directory for visualization in TensorBoard.
 - Model checkpoints are saved every 5 epochs as `<experiment_name>_e<epoch>.pth`.
-
-### TensorBoard Visualization
-
-Start TensorBoard:
-``` tensorboard --logdir=runs```
-Open [http://localhost:6006](http://localhost:6006) in your browser to monitor training.
 
 ## Configurations
 
@@ -78,9 +68,9 @@ Open [http://localhost:6006](http://localhost:6006) in your browser to monitor t
 | `embed_dim`        | Embedding dimension          | `384`   |
 | `tgt_vocab_size`   | Target vocabulary size       | `384`   |
 | `seq_len`          | Sequence length              | `256`   |
-| `num_layers`       | Number of transformer layers | `3`     |
-| `expansion_factor` | Feedforward expansion factor | `2`     |
-| `n_heads`          | Number of attention heads    | `3`     |
+| `num_layers`       | Number of transformer layers | `6`     |
+| `expansion_factor` | Feedforward expansion factor | `4`     |
+| `n_heads`          | Number of attention heads    | `6`     |
 
 ### Dataset Config (`DatasetConfig`)
 
