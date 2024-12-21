@@ -6,3 +6,4 @@ transformers_from_scratch/toy_data/*
 runs/
 .ipynb_checkpoints
 *.ipynb
+cpp/*

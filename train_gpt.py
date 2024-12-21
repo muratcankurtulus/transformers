@@ -62,6 +62,8 @@ def evaluate(model, criterion, eval_loader, vocab_size):
             loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
             total_loss += loss.item()
             tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
+
+    model.train()
     return total_loss / len(eval_loader)
 
 
@@ -86,7 +88,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     #    model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.98), eps=1e-9)
 
     # Load data and create DataLoader
     with open(train_data_path, encoding="utf-8") as f:
@@ -116,9 +118,8 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     # Training loop
     for epoch in range(epochs):
         train_loss = 0
-        model.train()
         with tqdm(train_loader, unit="batch") as tepoch:
-            for src, tgt in tepoch:
+            for step, (src, tgt) in enumerate(tepoch):
                 src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
                 mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
@@ -129,7 +130,9 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
                 # Log learning rate
                 tepoch.set_postfix(loss=f"{loss.item():.4f}")
                 train_loss += loss.item()
-
+                if step % 500 == 0 and step != 0:
+                    eval_step = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
+                    print(f"Step {step} | Eval Loss: {eval_step}")
             train_loss /= len(train_loader)
 
         eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
