@@ -15,6 +15,7 @@ class GPT(nn.Module):
         num_layers: int = 2,
         expansion_factor: int = 4,
         n_heads: int = 8,
+        pos_encoding_type="rotary",
     ):
         """
         Initialize the GPT model.
@@ -29,7 +30,15 @@ class GPT(nn.Module):
         """
         super().__init__()
 
-        self.decoder = GPTDecoder(tgt_vocab_size, embed_dim, seq_len, num_layers, expansion_factor, n_heads)
+        self.decoder = GPTDecoder(
+            tgt_vocab_size,
+            embed_dim,
+            seq_len,
+            num_layers,
+            expansion_factor,
+            n_heads,
+            pos_encoding_type=pos_encoding_type,
+        )
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """
