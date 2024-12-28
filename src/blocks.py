@@ -131,7 +131,6 @@ class PositionalEncoding(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_dim, n_heads, pos_encoding_type, max_seq_len=512, dropout_rate=0.2):
         """
-        Enhanced Multi-Head Attention with flash attention support and other optimizations
         Parameters:
             embed_dim: dimension of embeddings
             n_heads: number of attention heads
@@ -143,87 +142,48 @@ class MultiHeadAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
-        self.dropout_rate = dropout_rate
+        self.do_0 = nn.Dropout(dropout_rate)
+        self.do_1 = nn.Dropout(dropout_rate)
         self.pos_encoding_type = pos_encoding_type
-        self.scale = self.head_dim**-0.5
 
         if pos_encoding_type == "rotary":
             self.rope = RotaryPositionalEncoding(self.head_dim, max_seq_len)
 
         assert self.head_dim * n_heads == embed_dim, "Embedding dimension must be divisible by number of heads"
 
-        # Combine Q,K,V projections into a single linear layer for efficiency
-        self.qkv = nn.Linear(embed_dim, 3 * embed_dim, bias=False)
-        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=False)
-
-        # Initialize weights with small values for better training stability
-        nn.init.normal_(self.qkv.weight, std=0.02)
-        nn.init.normal_(self.out_proj.weight, std=0.02)
-
-    def _flash_attention(self, q, k, v, mask=None):
-        """
-        Efficient attention implementation using flash attention if available
-        """
-        try:
-            from flash_attn import flash_attn_func
-
-            # Flash attention expects shape (batch, seqlen, nheads, headdim)
-            q = q.transpose(1, 2)
-            k = k.transpose(1, 2)
-            v = v.transpose(1, 2)
-
-            output = flash_attn_func(q, k, v, dropout_p=self.dropout_rate, causal=mask is not None)
-            return output.transpose(1, 2)
-        except ImportError:
-            return self._standard_attention(q, k, v, mask)
-
-    def _standard_attention(self, q, k, v, mask=None):
-        """
-        Standard scaled dot-product attention with optimizations
-        """
-        # Scaled dot-product attention
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-
-        if mask is not None:
-            attn = attn.masked_fill(mask == 0, float("-inf"))
-
-        # Use softmax with better numerical stability
-        attn = F.softmax(attn, dim=-1, dtype=torch.float32).to(q.dtype)
-
-        # Apply dropout directly to attention weights
-        if self.training and self.dropout_rate > 0:
-            attn = F.dropout(attn, p=self.dropout_rate)
-
-        return attn @ v
+        self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.k_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.v_linear = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.out_linear = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, query, key, value, mask=None):
-        """
-        Enhanced forward pass with optimized attention computation
-        """
         batch_size = query.size(0)
 
-        # Fused QKV projection
-        qkv = self.qkv(query).chunk(3, dim=-1)
-        q, k, v = map(lambda t: t.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2), qkv)
+        # Linear projections
+        Q = self.q_linear(query)
+        K = self.k_linear(key)
+        V = self.v_linear(value)
+
+        # Reshape to (batch_size, n_heads, seq_len, head_dim)
+        Q = Q.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
+        K = K.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
+        V = V.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
 
         # Apply RoPE if selected
         if self.pos_encoding_type == "rotary":
-            q = self.rope(q)
-            k = self.rope(k)
+            Q = self.rope(Q)
+            K = self.rope(K)
 
-        # Use flash attention if available, otherwise fall back to standard attention
-        if hasattr(torch.backends, "cuda") and torch.backends.cuda.is_built() and query.is_cuda:
-            attn_output = self._flash_attention(q, k, v, mask)
-        else:
-            attn_output = self._standard_attention(q, k, v, mask)
-
-        # Combine heads and project output
-        output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
-        output = self.out_proj(output)
-
-        # Apply output dropout only once at the end
-        if self.training and self.dropout_rate > 0:
-            output = F.dropout(output, p=self.dropout_rate)
+        # Scaled dot-product attention
+        scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (batch_size, n_heads, seq_len, seq_len)
+        if mask is not None:
+            scores.masked_fill_(mask, float("-inf"))  # Apply the mask
+        attn_weights = F.softmax(scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
+        attn_weights = self.do_0(attn_weights)
+        attn_output = attn_weights @ V
+        # Concatenate heads and put through final linear layer
+        attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
+        output = self.do_1(self.out_linear(attn_output))
 
         return output
 

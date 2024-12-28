@@ -6,3 +6,5 @@ cpp/
 *.pth
 .ipynb_checkpoints
 *.ipynb
+*.egg-info
+build/
