@@ -1,9 +1,8 @@
 __pycache__
-env/*
-transformers_from_scratch/toy_data/*
-*.pth
-/toy_data/*
+env/
 runs/
+cpp/
+/toy_data
+*.pth
 .ipynb_checkpoints
 *.ipynb
-cpp/*
