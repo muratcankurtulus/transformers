@@ -1,67 +1,61 @@
-# GPT Model Training
+# GPT and Transformer Models
 
-This project trains a GPT model using PyTorch to process text data. It includes tokenization, dataset preparation, and a training loop with evaluation.
+This project implements GPT and Transformer models from scratch using PyTorch. It includes custom tokenization, model architectures, and training pipelines.
 
 ## Features
 
-- Implements a configurable GPT model using `torch.nn` for text sequence generation.
-- Utilizes `torch.utils.data` for efficient dataset management.
-- Supports dynamic configuration for model and dataset parameters using Pydantic.
+- Custom GPT and Transformer implementations with configurable architectures
+- Byte-Pair Encoding (BPE) tokenizer with special token support
+- Support for both Rotary Position Embeddings (RoPE) and sinusoidal positional encodings
+- Efficient dataset management with PyTorch DataLoader
+- Dynamic configuration using Pydantic
+- Text generation capabilities
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - Dependencies:
-  - `torch`
-  - `tqdm`
+  - `torch>=2.4.1`
   - `pydantic`
+  - `joblib`
+  - `regex`
+  - `tqdm`
+  - `flash-attn`
 
 Install dependencies using `pip`:
-```bash 
-pip install torch torchvision pydantic tqdm tensorboard
-```
-
-## File Structure
-
-- `blocks.py`: Defines the building blocks of the GPT model and Transformer model.
-- `gpt.py`: Defines the GPT model.
-- `tokenizer.py`: Defines Tokenizer class for encoding and decoding text.
-- `tokoenization.py`: Defines functions for tokenization and dataset preparation.
-- `train_gpt.py`: Main script for training and evaluation for GPT model.
 
 ## Usage
 
-### Command-Line Arguments
+### Training
 
-| Argument             | Description                                                      | Default                        |
-| -------------------- | ---------------------------------------------------------------- | ------------------------------ |
-| `--tokenizer`        | Path to the tokenizer file                                       | `./toy_data/tiny_sp`           |
-| `--train_data`       | Path to the training data                                        | `./toy_data/tiny_sp_train.txt` |
-| `--eval_data`        | Path to the evaluation data                                      | `./toy_data/tiny_sp_test.txt`  |
-| `--epochs`           | Number of training epochs                                        | `100`                          |
-| `--embed_dim`        | Embedding dimension                                              | `384`                          |
-| `--tgt_vocab_size`   | Target vocabulary size                                           | `384`                          |
-| `--seq_len`          | Sequence length                                                  | `256`                          |
-| `--num_layers`       | Number of transformer layers                                     | `3`                            |
-| `--expansion_factor` | Feedforward expansion factor                                     | `2`                            |
-| `--n_heads`          | Number of attention heads                                        | `3`                            |
-| `--experiment_name`  | Name of the experiment (logs saved under `runs/experiment_name`) | None                           |
-| `--batch_size`       | Training batch size                                              | `64`                           |
-| `--shuffle`          | Shuffle dataset                                                  | `True`                         |
+Train a GPT model using the training script:
 
-### Running the Training Script
+### Model Features
 
-```
-python train.py --tokenizer ./path/to/tokenizer --train_data ./path/to/train.txt --eval_data ./path/to/eval.txt --epochs 50 --experiment_name my_experiment
-```
+#### Tokenizer
 
-### Output
+- Custom BPE tokenizer implementation with caching
+- Support for special tokens (`<PAD>`, `<UNK>`, `<BOS>`, `<EOS>`)
+- Compatible with both custom tokenizer and tiktoken
 
-- Model checkpoints are saved every 5 epochs as `<experiment_name>_e<epoch>.pth`.
+#### Architecture
 
-## Configurations
+- Configurable GPT and Transformer models
+- Support for both Rotary Position Embeddings (RoPE) and sinusoidal encodings
+- Multi-head attention with dropout and layer normalization
+- Configurable feed-forward expansion factor
 
-### Model Config (`ModelConfig`)
+### Training Features
+
+- Model checkpoints saved every 5 epochs
+- Evaluation during training (every 500 steps)
+- Support for both CPU and CUDA training
+- Progress tracking with tqdm
+- Efficient data loading with PyTorch DataLoader
+
+### Model Configurations
+
+#### GPT Config (`ModelConfig`)
 
 | Parameter          | Description                  | Default |
 | ------------------ | ---------------------------- | ------- |
@@ -72,16 +66,16 @@ python train.py --tokenizer ./path/to/tokenizer --train_data ./path/to/train.txt
 | `expansion_factor` | Feedforward expansion factor | `4`     |
 | `n_heads`          | Number of attention heads    | `6`     |
 
-### Dataset Config (`DatasetConfig`)
+#### Dataset Config (`DatasetConfig`)
 
 | Parameter    | Description         | Default |
 | ------------ | ------------------- | ------- |
 | `batch_size` | Batch size          | `64`    |
 | `shuffle`    | Shuffle the dataset | `True`  |
 
-## Customization
+## Contributing
 
-You can modify `gpt.py` or `tokenizer.py` and/or `tokenization.py` to use a different model architecture or tokenizer setup as needed.
+Feel free to submit issues and enhancement requests.
 
 ## License
 
