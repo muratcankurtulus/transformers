@@ -112,6 +112,28 @@ python src/generate.py \
 
 *Note: The `generate.py` script currently has hardcoded model configuration parameters (`embed_dim`, `n_heads`, `num_layers`). Ensure these match the model specified in `--model_path` or modify the script.*
 
+### Training the Custom Tokenizer (`src/tokenization.py`)
+
+If you want to use the custom BPE tokenizer (`tokenizer_type='default'` in `train_gpt.py`), you first need to train it on your corpus using the provided `src/tokenization.py` script.
+
+This script uses the `Tokenizer` class from `src/tokenizer.py` and handles training, saving, encoding, and decoding via command-line arguments.
+
+**Running Tokenizer Training:**
+
+Use the `--train` argument to specify the path to your text corpus and `--vocab_size` to set the desired vocabulary size.
+
+```bash
+python src/tokenization.py \
+    --train ./path/to/your/corpus.txt \
+    --vocab_size 20000
+```
+
+This will train the tokenizer and save the necessary `vocab` and `merges` files to a directory named after your input file (without the extension) in the same location (e.g., `./path/to/your/corpus`).
+
+You can then point the main training script (`train_gpt.py`) to this directory using `--tokenizer ./path/to/your/corpus --tokenizer_type default`.
+
+The `src/tokenization.py` script also supports encoding (`--encode "text"`) and decoding (`--decode "[tokens]"`) using a pre-trained tokenizer (note: the script currently hardcodes the path `toy_data/wiki_text_2` for encode/decode, you might need to adjust it).
+
 ### Output
 
 - Model checkpoints are saved periodically during training (e.g., every 5 epochs by default in `train_gpt.py`) as `<experiment_name>_e<epoch>.pth` in the project root directory.
