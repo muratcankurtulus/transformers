@@ -177,6 +177,16 @@ class Tokenizer:
             # Update the token sequence and pair counts
             positions = sorted(pair_positions[pair], reverse=True)
             for pos in positions:
+                # Check if pos and pos + 1 are valid indices in the *current* token_sequence
+                if pos + 1 >= len(token_sequence):
+                    continue  # This position is no longer valid due to previous merges
+
+                # Check if the pair at pos is still the one we intend to merge.
+                # It might have changed due to a prior merge in this same loop iteration
+                # affecting pos-1 or pos+1.
+                if (token_sequence[pos][1], token_sequence[pos + 1][1]) != pair:
+                    continue  # Pair mismatch, skip this position
+
                 # Remove the old pair
                 first_token = token_sequence[pos]
                 second_token = token_sequence[pos + 1]
@@ -191,21 +201,32 @@ class Tokenizer:
                     left_pair = (token_sequence[pos - 1][1], first_token[1])
                     if left_pair in pair_counts:
                         pair_counts[left_pair] -= 1
-                        pair_positions[left_pair].remove(pos - 1)
+                        # Check if left_pair is still in pair_positions and if pos - 1 is in its list
+                        if left_pair in pair_positions and (pos - 1) in pair_positions[left_pair]:
+                            pair_positions[left_pair].remove(pos - 1)
                         if pair_counts[left_pair] == 0:
                             del pair_counts[left_pair]
-                            del pair_positions[left_pair]
+                            if left_pair in pair_positions:  # Also check here before deleting
+                                del pair_positions[left_pair]
 
-                if pos + 1 < len(token_sequence):
-                    right_pair = (second_token[1], token_sequence[pos + 1][1])
-                    if right_pair in pair_counts:
-                        pair_counts[right_pair] -= 1
-                        # Find and remove the correct position
-                        if pos in pair_positions[right_pair]:
-                            pair_positions[right_pair].remove(pos)
-                        if pair_counts[right_pair] == 0:
-                            del pair_counts[right_pair]
-                            del pair_positions[right_pair]
+                # The check for right_pair (pos + 1 < len(token_sequence)) already ensures index validity
+                # But we need a similar check for removing the position 'pos' itself
+                if pos + 1 < len(token_sequence):  # This check needs refinement related to `second_token`
+                    # Re-calculate right_pair based on potentially updated token_sequence[pos+1]
+                    # However, the original logic used second_token, which might be stale if pos+1 was modified
+                    # Let's stick to the original logic's intent but add safety checks
+                    original_right_pair = (second_token[1], token_sequence[pos + 1][1])  # Pair *before* merge at pos+1
+
+                    # Check if the pair involving the *original* second token exists and needs updating
+                    if original_right_pair in pair_counts:
+                        pair_counts[original_right_pair] -= 1
+                        # Check if the pair exists and the position 'pos' is in its list
+                        if original_right_pair in pair_positions and pos in pair_positions[original_right_pair]:
+                            pair_positions[original_right_pair].remove(pos)
+                        if pair_counts[original_right_pair] == 0:
+                            del pair_counts[original_right_pair]
+                            if original_right_pair in pair_positions:  # Also check here before deleting
+                                del pair_positions[original_right_pair]
 
                 # 2. Add new pairs
                 if pos > 0:
