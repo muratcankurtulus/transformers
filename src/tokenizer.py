@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import joblib
 import regex as re
@@ -12,12 +12,14 @@ class Tokenizer:
 
     Attributes:
         SPECIAL_TOKENS (Dict[str, int]): Special tokens with their corresponding IDs.
+        BASE_VOCAB_SIZE (int): The size of the base vocabulary (256 bytes).
         vocab_size (int): The size of the vocabulary.
         vocab (Dict[int, bytes]): The vocabulary mapping token IDs to byte sequences.
         merges (Dict[Tuple[int, int], int]): The merge operations for BPE.
     """
 
     SPECIAL_TOKENS = {"<PAD>": 0, "<UNK>": 1, "<BOS>": 2, "<EOS>": 3}
+    BASE_VOCAB_SIZE = 256
 
     def __init__(self, vocab_size: int = 1024):
         """Initializes the Tokenizer with a given vocabulary size.
@@ -26,7 +28,7 @@ class Tokenizer:
             vocab_size (int): The size of the vocabulary. Default is 1024.
         """
         self.vocab_size = vocab_size
-        self.vocab = {idx: bytes([idx]) for idx in range(256)}
+        self.vocab = {idx: bytes([idx]) for idx in range(self.BASE_VOCAB_SIZE)}
         self.vocab.update({v: k.encode("utf-8") for k, v in self.SPECIAL_TOKENS.items()})
         self.merges = {}
         self._stats_cache = {}
@@ -35,7 +37,7 @@ class Tokenizer:
         """Computes the frequency of each pair of consecutive tokens.
 
         Args:
-            tokens (List[Tuple[int, int]]): The list of token pairs.
+            tokens (List[int]): The list of tokens.
 
         Returns:
             Dict[Tuple[int, int], int]: A dictionary with token pairs as keys and their frequencies as values.
@@ -45,33 +47,16 @@ class Tokenizer:
             counts[pair] = counts.get(pair, 0) + 1
         return counts
 
-    def get_stats_with_memoization(self, tokens: List[int]) -> Dict[Tuple[int, int], int]:
-        """Computes the frequency of each pair of consecutive tokens, using memoization for caching results.
-
-        Args:
-            tokens (List[Tuple[int, int]]): The list of token pairs.
-
-        Returns:
-            Dict[Tuple[int, int], int]: A dictionary with token pairs as keys and their frequencies as values.
-        """
-        tuple_tokens = tuple(tokens)
-        if tuple_tokens in self._stats_cache:
-            return self._stats_cache[tuple_tokens]
-
-        stats = self.get_stats(tokens)
-        self._stats_cache[tuple_tokens] = stats
-        return stats
-
     def merge_tokens(self, tokens: List[int], pair: Tuple[int, int], idx: int) -> List[int]:
         """Merges a specific pair of tokens in the token list.
 
         Args:
-            tokens (List[Tuple[int, int]]): The list of tokens.
+            tokens (List[int]): The list of tokens.
             pair (Tuple[int, int]): The pair of tokens to merge.
             idx (int): The index to assign to the merged token.
 
         Returns:
-            List[Tuple[int, int]]: The new list of tokens after merging.
+            List[int]: The new list of tokens after merging.
         """
         new_tokens = []
         a, b = pair
@@ -96,13 +81,22 @@ class Tokenizer:
         """
         # Encoding text
         tokens = list(text.encode("utf-8"))
-        while len(tokens) >= 2:
-            stats = self.get_stats(tokens)
-            pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
-            if pair not in self.merges:
-                break
-            idx = self.merges[pair]
-            tokens = self.merge_tokens(tokens, pair, idx)
+
+        # Continue merging until no more merges can be applied
+        changes = True
+        while changes and len(tokens) >= 2:
+            changes = False
+            # Iterate through all possible pairs in the current token sequence
+            for i in range(len(tokens) - 1):
+                pair = (tokens[i], tokens[i + 1])
+                # Check if this pair has a merge rule
+                if pair in self.merges:
+                    # Apply the merge
+                    idx = self.merges[pair]
+                    tokens = tokens[:i] + [idx] + tokens[i + 2 :]
+                    changes = True
+                    break  # Start over with the new token sequence
+
         return tokens
 
     def add_special_tokens(self, tokens: List[int]) -> List[int]:
@@ -116,16 +110,21 @@ class Tokenizer:
         """
         return [self.SPECIAL_TOKENS["<BOS>"]] + tokens + [self.SPECIAL_TOKENS["<EOS>"]]
 
-    def decode(self, tokens: torch.Tensor) -> str:
+    def decode(self, tokens: Union[List[int], torch.Tensor]) -> str:
         """Decodes a list of token IDs back into a string.
 
         Args:
-            tokens (List[int]): The list of token IDs to decode.
+            tokens (Union[List[int], torch.Tensor]): The list of token IDs or tensor to decode.
 
         Returns:
             str: The decoded string.
         """
-        token_list = [int(t.item()) for t in tokens.squeeze() if t not in self.SPECIAL_TOKENS.values()]
+        # Handle both List[int] and torch.Tensor inputs
+        if isinstance(tokens, torch.Tensor):
+            token_list = [int(t.item()) for t in tokens.squeeze() if t not in self.SPECIAL_TOKENS.values()]
+        else:
+            token_list = [int(t) for t in tokens if t not in self.SPECIAL_TOKENS.values()]
+
         token_bytes = b"".join([self.vocab[t] for t in token_list])
         text = token_bytes.decode("utf-8", errors="replace")
         return text
@@ -137,6 +136,8 @@ class Tokenizer:
         Args:
             text (str): The input text to train on.
         """
+        # This regex pattern is based on GPT-2's BPE tokenization approach
+        # It splits text into words, numbers, punctuation, and whitespace
         pat = re.compile(
             r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
         )
@@ -145,14 +146,89 @@ class Tokenizer:
         text_bytes = b"".join(bytestrings)
         tokens = list(map(int, text_bytes))
 
-        copy_tokens = tokens.copy()
-        num_merges = self.vocab_size - 256 - len(self.SPECIAL_TOKENS)
-        for i in tqdm(range(num_merges)):
-            stats = self.get_stats(copy_tokens)
-            pair = max(stats, key=stats.get)
-            copy_tokens = self.merge_tokens(copy_tokens, pair, 256 + i + len(self.SPECIAL_TOKENS))
-            self.merges[pair] = 256 + i + len(self.SPECIAL_TOKENS)
+        # Create a list of tokens with their positions
+        token_sequence = []
+        for i, token in enumerate(tokens):
+            token_sequence.append((i, token))
 
+        # Initialize pair counts and positions
+        pair_counts = {}
+        pair_positions = {}
+
+        # Initial count of all pairs
+        for i in range(len(token_sequence) - 1):
+            pair = (token_sequence[i][1], token_sequence[i + 1][1])
+            if pair not in pair_counts:
+                pair_counts[pair] = 0
+                pair_positions[pair] = []
+            pair_counts[pair] += 1
+            pair_positions[pair].append(i)
+
+        num_merges = self.vocab_size - self.BASE_VOCAB_SIZE - len(self.SPECIAL_TOKENS)
+        for i in tqdm(range(num_merges)):
+            if not pair_counts:
+                break
+
+            # Find the most frequent pair
+            pair = max(pair_counts, key=pair_counts.get)
+            new_token_id = self.BASE_VOCAB_SIZE + i + len(self.SPECIAL_TOKENS)
+            self.merges[pair] = new_token_id
+
+            # Update the token sequence and pair counts
+            positions = sorted(pair_positions[pair], reverse=True)
+            for pos in positions:
+                # Remove the old pair
+                first_token = token_sequence[pos]
+                second_token = token_sequence[pos + 1]
+
+                # Create the new merged token
+                token_sequence[pos] = (first_token[0], new_token_id)
+                token_sequence.pop(pos + 1)
+
+                # Update pair counts
+                # 1. Remove affected pairs
+                if pos > 0:
+                    left_pair = (token_sequence[pos - 1][1], first_token[1])
+                    if left_pair in pair_counts:
+                        pair_counts[left_pair] -= 1
+                        pair_positions[left_pair].remove(pos - 1)
+                        if pair_counts[left_pair] == 0:
+                            del pair_counts[left_pair]
+                            del pair_positions[left_pair]
+
+                if pos + 1 < len(token_sequence):
+                    right_pair = (second_token[1], token_sequence[pos + 1][1])
+                    if right_pair in pair_counts:
+                        pair_counts[right_pair] -= 1
+                        # Find and remove the correct position
+                        if pos in pair_positions[right_pair]:
+                            pair_positions[right_pair].remove(pos)
+                        if pair_counts[right_pair] == 0:
+                            del pair_counts[right_pair]
+                            del pair_positions[right_pair]
+
+                # 2. Add new pairs
+                if pos > 0:
+                    new_left_pair = (token_sequence[pos - 1][1], new_token_id)
+                    if new_left_pair not in pair_counts:
+                        pair_counts[new_left_pair] = 0
+                        pair_positions[new_left_pair] = []
+                    pair_counts[new_left_pair] += 1
+                    pair_positions[new_left_pair].append(pos - 1)
+
+                if pos < len(token_sequence) - 1:
+                    new_right_pair = (new_token_id, token_sequence[pos + 1][1])
+                    if new_right_pair not in pair_counts:
+                        pair_counts[new_right_pair] = 0
+                        pair_positions[new_right_pair] = []
+                    pair_counts[new_right_pair] += 1
+                    pair_positions[new_right_pair].append(pos)
+
+            # Remove the merged pair from counts
+            del pair_counts[pair]
+            del pair_positions[pair]
+
+        # Build the vocabulary
         for (a, b), idx in tqdm(self.merges.items()):
             self.vocab[idx] = self.vocab[a] + self.vocab[b]
 
