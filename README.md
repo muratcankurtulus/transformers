@@ -1,5 +1,6 @@
-# GPT Model Training
+# GPT and Transformer Models
 
+\<\<\<\<\<\<\< HEAD
 This project trains a GPT model using PyTorch for text generation. It includes support for different tokenizers, dataset preparation, a training loop with evaluation, and a script for text generation.
 
 ## Features
@@ -138,12 +139,74 @@ The `src/tokenization.py` script also supports encoding (`--encode "text"`) and 
 
 - Model checkpoints are saved periodically during training (e.g., every 5 epochs by default in `train_gpt.py`) as `<experiment_name>_e<epoch>.pth` in the project root directory.
 - Generated text from `generate.py` is printed to the console.
+  \=======
+  This project implements GPT and Transformer models from scratch using PyTorch. It includes custom tokenization, model architectures, and training pipelines.
 
-## Configurations
+## Features
 
+- Custom GPT and Transformer implementations with configurable architectures
+- Byte-Pair Encoding (BPE) tokenizer with special token support
+- Support for both Rotary Position Embeddings (RoPE) and sinusoidal positional encodings
+- Efficient dataset management with PyTorch DataLoader
+- Dynamic configuration using Pydantic
+- Text generation capabilities
+
+## Requirements
+
+- Python 3.11+
+- Dependencies:
+  - `torch>=2.4.1`
+  - `pydantic`
+  - `joblib`
+  - `regex`
+  - `tqdm`
+  - `flash-attn`
+
+Install dependencies using `pip`:
+
+## Usage
+
+### Training
+
+Train a GPT model using the training script:
+
+### Model Features
+
+#### Tokenizer
+
+- Custom BPE tokenizer implementation with caching
+- Support for special tokens (`<PAD>`, `<UNK>`, `<BOS>`, `<EOS>`)
+- Compatible with both custom tokenizer and tiktoken
+
+#### Architecture
+
+> > > > > > > f58c1d9f371e7e012d26935191af213c1cc99c19
+
+- Configurable GPT and Transformer models
+- Support for both Rotary Position Embeddings (RoPE) and sinusoidal encodings
+- Multi-head attention with dropout and layer normalization
+- Configurable feed-forward expansion factor
+
+\<\<\<\<\<\<\< HEAD
 Default configurations are defined within `train_gpt.py` using Pydantic `BaseModel`s. They can be overridden via command-line arguments.
 
 ### Model Config (`ModelConfig` in `train_gpt.py`)
+
+\=======
+
+### Training Features
+
+- Model checkpoints saved every 5 epochs
+- Evaluation during training (every 500 steps)
+- Support for both CPU and CUDA training
+- Progress tracking with tqdm
+- Efficient data loading with PyTorch DataLoader
+
+### Model Configurations
+
+#### GPT Config (`ModelConfig`)
+
+> > > > > > > f58c1d9f371e7e012d26935191af213c1cc99c19
 
 | Parameter          | Description                  | Default |
 | ------------------ | ---------------------------- | ------- |
@@ -154,18 +217,32 @@ Default configurations are defined within `train_gpt.py` using Pydantic `BaseMod
 | `expansion_factor` | Feedforward expansion factor | `4`     |
 | `n_heads`          | Number of attention heads    | `6`     |
 
+\<\<\<\<\<\<\< HEAD
+
 ### Dataset Config (`DatasetConfig` in `train_gpt.py`)
+
+\=======
+
+#### Dataset Config (`DatasetConfig`)
+
+> > > > > > > f58c1d9f371e7e012d26935191af213c1cc99c19
 
 | Parameter    | Description         | Default |
 | ------------ | ------------------- | ------- |
 | `batch_size` | Batch size          | `64`    |
 | `shuffle`    | Shuffle the dataset | `True`  |
 
-## Customization
+## Contributing
+
+\<\<\<\<\<\<\< HEAD
 
 - Modify model architecture in `src/gpt.py` or `src/blocks.py`.
 - Implement or use different tokenizers by adjusting `train_gpt.py` and potentially `src/tokenizer.py`.
 - Change training loop, optimizer, or loss function in `src/train_gpt.py`.
+  \=======
+  Feel free to submit issues and enhancement requests.
+
+> > > > > > > f58c1d9f371e7e012d26935191af213c1cc99c19
 
 ## License
 
