@@ -8,6 +8,41 @@ from tqdm import tqdm
 from tokenizer import Tokenizer
 
 
+def resolve_tokenizer_path(tokenizer_path):
+    """Resolve the tokenizer path to handle both directory and file paths.
+
+    Args:
+        tokenizer_path: Path to the tokenizer
+
+    Returns:
+        The resolved tokenizer path
+    """
+    # Check if the path exists as a directory
+    if os.path.isdir(tokenizer_path):
+        return tokenizer_path
+
+    # Check if the path exists with /merges and /vocab
+    if os.path.exists(os.path.join(tokenizer_path, "merges")):
+        return tokenizer_path
+
+    # Check if it's a file path with extension
+    path = Path(tokenizer_path)
+    if path.suffix:
+        # Try without extension
+        base_path = str(path.with_suffix(""))
+        if os.path.exists(os.path.join(base_path, "merges")):
+            return base_path
+
+    # The path might be a base path without the directory structure
+    if os.path.exists(tokenizer_path + "/merges"):
+        return tokenizer_path
+
+    raise FileNotFoundError(
+        f"Could not find tokenizer files at {tokenizer_path}. "
+        f"Expected to find 'merges' and 'vocab' files in this directory."
+    )
+
+
 def pretokenize_file(tokenizer_path, input_file, output_file=None, tokenizer_type="default"):
     """Pre-tokenize a text file and save it as a PyTorch tensor.
 
@@ -30,7 +65,16 @@ def pretokenize_file(tokenizer_path, input_file, output_file=None, tokenizer_typ
 
         tokenizer = tiktoken.get_encoding("cl100k_base")
     else:
-        tokenizer = Tokenizer.load(tokenizer_path)
+        try:
+            # Try to resolve the tokenizer path
+            resolved_path = resolve_tokenizer_path(tokenizer_path)
+            print(f"Loading tokenizer from {resolved_path}")
+            tokenizer = Tokenizer.load(resolved_path)
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            print("Please ensure the tokenizer has been trained and exists at the specified path.")
+            print("You can train a tokenizer using the tokenization.py script.")
+            return
 
     # Read input file
     with open(input_file, encoding="utf-8") as f:
@@ -88,29 +132,28 @@ def batch_pretokenize(tokenizer_path, input_dir, output_dir=None, tokenizer_type
 
     print(f"Found {len(files)} files to tokenize")
 
+    # First try to resolve the tokenizer path once for all files
+    if tokenizer_type != "tiktoken":
+        try:
+            resolved_path = resolve_tokenizer_path(tokenizer_path)
+            print(f"Using tokenizer from {resolved_path}")
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            print("Please ensure the tokenizer has been trained and exists at the specified path.")
+            print("You can train a tokenizer using the tokenization.py script.")
+            return
+
     # Process each file
     for file_path in tqdm(files, desc="Processing files"):
         output_path = output_dir / file_path.with_suffix(".pt").name
-        pretokenize_file(tokenizer_path, str(file_path), str(output_path), tokenizer_type)
+        if tokenizer_type == "tiktoken":
+            pretokenize_file(tokenizer_path, str(file_path), str(output_path), tokenizer_type)
+        else:
+            pretokenize_file(resolved_path, str(file_path), str(output_path), tokenizer_type)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pre-tokenize text files to PyTorch tensors for faster training")
-
-    parser.add_argument(
-        "--tokenizer",
-        default="./toy_data/tiny_sp",
-        type=str,
-        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
-    )
-
-    parser.add_argument(
-        "--tokenizer_type",
-        type=str,
-        default="default",
-        choices=["default", "tiktoken"],
-        help="Type of tokenizer to use (default: sentencepiece)",
-    )
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
@@ -119,6 +162,19 @@ if __name__ == "__main__":
     file_parser.add_argument("input_file", type=str, help="Path to the input text file")
     file_parser.add_argument(
         "--output_file", type=str, help="Path to save the output .pt file (defaults to input_file with .pt extension)"
+    )
+    file_parser.add_argument(
+        "--tokenizer",
+        default="./toy_data/tiny_sp",
+        type=str,
+        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
+    )
+    file_parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        default="default",
+        choices=["default", "tiktoken"],
+        help="Type of tokenizer to use (default: sentencepiece)",
     )
 
     # Batch pre-tokenization
@@ -129,6 +185,19 @@ if __name__ == "__main__":
     )
     batch_parser.add_argument(
         "--file_pattern", type=str, default="*.txt", help="Pattern to match files (default: *.txt)"
+    )
+    batch_parser.add_argument(
+        "--tokenizer",
+        default="./toy_data/tiny_sp",
+        type=str,
+        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
+    )
+    batch_parser.add_argument(
+        "--tokenizer_type",
+        type=str,
+        default="default",
+        choices=["default", "tiktoken"],
+        help="Type of tokenizer to use (default: sentencepiece)",
     )
 
     args = parser.parse_args()
