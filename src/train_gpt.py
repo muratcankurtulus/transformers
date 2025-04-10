@@ -26,19 +26,31 @@ class DatasetConfig(BaseModel):
 
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data, seq_len, tokenizer, tokenizer_type):
+    def __init__(self, data_path, seq_len, tokenizer, tokenizer_type):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
 
-        if tokenizer_type == "tiktoken":
-            encoded_data = self.tokenizer.encode(data, allowed_special="all")
-        else:
-            encoded_data = self.tokenizer.encode(data)
+        if data_path.endswith(".pt"):
+            print(f"Loading pre-tokenized data from {data_path}")
+            self.data = torch.load(data_path)
+        elif data_path.endswith(".txt"):
+            print(f"Tokenizing data from {data_path}...")
+            with open(data_path, encoding="utf-8") as f:
+                data = f.read()
 
-        self.data = torch.tensor(encoded_data)
+            if tokenizer_type == "tiktoken":
+                encoded_data = self.tokenizer.encode(data, allowed_special="all")
+            else:
+                encoded_data = self.tokenizer.encode(data)
+
+            self.data = torch.tensor(encoded_data)
+            print("Tokenization complete.")
+        else:
+            raise ValueError(f"Unsupported data file format: {data_path}. Please use .txt or .pt")
+
         # Pre-calculate valid indices
         self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
-        print(len(self.valid_indices))
+        print(f"Found {len(self.valid_indices)} valid sequences.")
 
     def __len__(self):
         return len(self.valid_indices)
@@ -72,7 +84,14 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     if tokenizer_type == "tiktoken":
         tokenizer = tiktoken.get_encoding("cl100k_base")  # or another model like "p50k_base"
     elif tokenizer_type == "default":
-        tokenizer = Tokenizer.load(tokenizer_path)
+        # Tokenizer is only needed if we are tokenizing text files
+        tokenizer = (
+            Tokenizer.load(tokenizer_path)
+            if train_data_path.endswith(".txt") or eval_data_path.endswith(".txt")
+            else None
+        )
+    else:
+        raise ValueError(f"Unsupported tokenizer type: {tokenizer_type}")
 
     # Model configuration
     model_config = ModelConfig(
@@ -91,26 +110,24 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.98), eps=1e-9)
 
     # Load data and create DataLoader
-    with open(train_data_path, encoding="utf-8") as f:
-        data = f.read()
-
-    with open(eval_data_path, encoding="utf-8") as f:
-        data_eval = f.read()
-
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
+    # Pass data paths directly to Dataset constructor
+    train_dataset = Dataset(train_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     train_loader = torch.utils.data.DataLoader(
-        Dataset(data, model_config.seq_len, tokenizer, tokenizer_type),
+        train_dataset,
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
         pin_memory=True,
     )
 
-    dataset_config.shuffle = False
+    # Use shuffle=False for eval loader config
+    eval_dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=False)  # Create separate config for eval
+    eval_dataset = Dataset(eval_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     eval_loader = torch.utils.data.DataLoader(
-        Dataset(data_eval, model_config.seq_len, tokenizer, tokenizer_type),
-        batch_size=dataset_config.batch_size,
-        shuffle=dataset_config.shuffle,
+        eval_dataset,
+        batch_size=eval_dataset_config.batch_size,  # Use eval config batch size
+        shuffle=eval_dataset_config.shuffle,  # Use eval config shuffle (False)
         num_workers=4,
         pin_memory=True,
     )
@@ -151,20 +168,20 @@ if __name__ == "__main__":
         "--tokenizer",
         default="./toy_data/tiny_sp",
         type=str,
-        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken)",
+        help="Path to the tokenizer (for sentencepiece) or name (for tiktoken). Only needed if data is in .txt format.",
     )
     parser.add_argument(
         "--tokenizer_type",
         type=str,
         default="default",
         choices=["default", "tiktoken"],
-        help="Type of tokenizer to use (default: sentencepiece)",
+        help="Type of tokenizer to use (default: sentencepiece). Only needed if data is in .txt format.",
     )
     parser.add_argument(
-        "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data"
+        "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data (.txt or .pt)"
     )
     parser.add_argument(
-        "--eval_data", default="./toy_data/tiny_sp_test.txt", type=str, help="Path to the evaluation data"
+        "--eval_data", default="./toy_data/tiny_sp_test.txt", type=str, help="Path to the evaluation data (.txt or .pt)"
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs (default: 100)")
     parser.add_argument(
