@@ -71,7 +71,7 @@ class Tokenizer:
         return new_tokens
 
     def encode(self, text: str) -> List[int]:
-        """Encodes a given text into a list of token IDs.
+        """Encodes a given text into a list of token IDs using a more efficient algorithm.
 
         Args:
             text (str): The input text to encode.
@@ -79,25 +79,63 @@ class Tokenizer:
         Returns:
             List[int]: The list of token IDs.
         """
-        # Encoding text
-        tokens = list(text.encode("utf-8"))
+        # Encoding text to bytes first
+        byte_tokens = list(text.encode("utf-8"))
 
-        # Continue merging until no more merges can be applied
-        changes = True
-        while changes and len(tokens) >= 2:
-            changes = False
-            # Iterate through all possible pairs in the current token sequence
-            for i in range(len(tokens) - 1):
-                pair = (tokens[i], tokens[i + 1])
-                # Check if this pair has a merge rule
-                if pair in self.merges:
-                    # Apply the merge
-                    idx = self.merges[pair]
-                    tokens = tokens[:i] + [idx] + tokens[i + 2 :]
-                    changes = True
-                    break  # Start over with the new token sequence
+        # Use a more efficient data structure - a linked list effectively
+        # Store the tokens in a list that we won't resize, and use indices to navigate
+        tokens = byte_tokens.copy()
 
-        return tokens
+        # For each position, store the next valid position
+        next_indices = list(range(1, len(tokens) + 1))
+        next_indices[-1] = -1  # End marker
+
+        # Keep track of valid token positions
+        valid_positions = list(range(len(tokens)))
+
+        # Continue until no more merges are possible
+        while len(valid_positions) >= 2:
+            did_merge = False
+
+            # Process each position
+            i = 0
+            while i != -1 and next_indices[i] != -1:
+                next_i = next_indices[i]
+
+                # Check if this pair can be merged
+                if (tokens[i], tokens[next_i]) in self.merges:
+                    # Get the merged token ID
+                    merged_id = self.merges[(tokens[i], tokens[next_i])]
+
+                    # Update the token at position i
+                    tokens[i] = merged_id
+
+                    # Update the next indices to skip the merged token
+                    next_indices[i] = next_indices[next_i]
+
+                    # Remove the merged position from valid positions
+                    if next_i in valid_positions:
+                        valid_positions.remove(next_i)
+
+                    did_merge = True
+
+                    # Don't advance i, as we need to check if the new pair can be merged
+                else:
+                    # Move to the next position
+                    i = next_i
+
+            # If no merges were performed, we're done
+            if not did_merge:
+                break
+
+        # Collect the final tokens
+        result = []
+        i = 0
+        while i != -1:
+            result.append(tokens[i])
+            i = next_indices[i]
+
+        return result
 
     def add_special_tokens(self, tokens: List[int]) -> List[int]:
         """Adds special tokens to the list of token IDs.
