@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 from pathlib import Path
 
 import torch
@@ -83,10 +84,31 @@ def pretokenize_file(tokenizer_path, input_file, output_file=None, tokenizer_typ
     print("Tokenizing data...")
 
     # Tokenize the data
+    print(f"Text length: {len(text)} characters")
+    print("This may take a while for large files. Starting tokenization...")
+
+    # Initialize progress bar to track tokenization progress (0-100%)
+    progress_bar = tqdm(total=100, desc="Tokenizing", unit="%")
+
+    # Start tracking time
+    start_time = time.time()
+
+    # Add a progress update function to handle progress reporting
+    def progress_callback(processed_chars):
+        progress_bar.update(processed_chars)
+
     if tokenizer_type == "tiktoken":
         encoded_data = tokenizer.encode(text, allowed_special="all")
     else:
-        encoded_data = tokenizer.encode(text)
+        # Call encode with progress monitoring
+        encoded_data = tokenizer.encode(text, progress_callback=progress_callback)
+
+    # Close the progress bar
+    progress_bar.close()
+
+    # Report tokenization time
+    elapsed_time = time.time() - start_time
+    print(f"Tokenization completed in {elapsed_time:.2f} seconds")
 
     # Convert to tensor
     data_tensor = torch.tensor(encoded_data, dtype=torch.long)

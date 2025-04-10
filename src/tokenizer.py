@@ -70,11 +70,13 @@ class Tokenizer:
                 i += 1
         return new_tokens
 
-    def encode(self, text: str) -> List[int]:
+    def encode(self, text: str, progress_callback=None) -> List[int]:
         """Encodes a given text into a list of token IDs using a more efficient algorithm.
 
         Args:
             text (str): The input text to encode.
+            progress_callback: Optional callback function for progress tracking.
+                              The function takes one parameter: number of characters processed.
 
         Returns:
             List[int]: The list of token IDs.
@@ -93,9 +95,23 @@ class Tokenizer:
         # Keep track of valid token positions
         valid_positions = list(range(len(tokens)))
 
+        # Initialize progress tracking
+        if progress_callback:
+            progress_callback(5)  # Report initial setup progress (5%)
+
         # Continue until no more merges are possible
+        merge_count = 0
+        total_positions = len(valid_positions)
+
+        # Calculate how many iterations we expect (approximate)
+        expected_iterations = min(len(self.merges), total_positions)
+        # We'll distribute 90% of progress across the merging phase (5-95%)
+        progress_per_iteration = 90.0 / max(1, expected_iterations)
+        last_reported_progress = 5  # Start at 5%
+
         while len(valid_positions) >= 2:
             did_merge = False
+            positions_processed = 0
 
             # Process each position
             i = 0
@@ -118,11 +134,23 @@ class Tokenizer:
                         valid_positions.remove(next_i)
 
                     did_merge = True
+                    merge_count += 1
 
                     # Don't advance i, as we need to check if the new pair can be merged
                 else:
                     # Move to the next position
                     i = next_i
+
+                positions_processed += 1
+
+                # No need for periodic updates based on positions - we'll update per merge pass
+
+            # If we did any merges, update the progress
+            if did_merge and progress_callback:
+                current_progress = int(5 + min(90, merge_count * progress_per_iteration))
+                if current_progress > last_reported_progress:
+                    progress_callback(current_progress - last_reported_progress)
+                    last_reported_progress = current_progress
 
             # If no merges were performed, we're done
             if not did_merge:
@@ -134,6 +162,10 @@ class Tokenizer:
         while i != -1:
             result.append(tokens[i])
             i = next_indices[i]
+
+        # Report completion of encoding (100%)
+        if progress_callback and last_reported_progress < 100:
+            progress_callback(100 - last_reported_progress)
 
         return result
 
