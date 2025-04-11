@@ -30,7 +30,7 @@ class Dataset(torch.utils.data.Dataset):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
 
-        if data_path.endswith(".pt"):
+        if data_path.endswith((".pt", ".bin")):
             print(f"Loading pre-tokenized data from {data_path}")
             self.data = torch.load(data_path)
         elif data_path.endswith(".txt"):
@@ -46,7 +46,7 @@ class Dataset(torch.utils.data.Dataset):
             self.data = torch.tensor(encoded_data)
             print("Tokenization complete.")
         else:
-            raise ValueError(f"Unsupported data file format: {data_path}. Please use .txt or .pt")
+            raise ValueError(f"Unsupported data file format: {data_path}. Please use .txt, .pt, or .bin")
 
         # Pre-calculate valid indices
         self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
@@ -79,17 +79,27 @@ def evaluate(model, criterion, eval_loader, vocab_size):
     return total_loss / len(eval_loader)
 
 
-def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_name, tokenizer_type):
+def main(
+    tokenizer_path,
+    train_data_path,
+    eval_data_path,
+    epochs,
+    experiment_name,
+    tokenizer_type,
+    eval_interval,
+    use_pretokenized,
+):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
         tokenizer = tiktoken.get_encoding("cl100k_base")  # or another model like "p50k_base"
     elif tokenizer_type == "default":
-        # Tokenizer is only needed if we are tokenizing text files
-        tokenizer = (
-            Tokenizer.load(tokenizer_path)
-            if train_data_path.endswith(".txt") or eval_data_path.endswith(".txt")
-            else None
-        )
+        # Only set tokenizer to None if BOTH files are pretokenized AND use_pretokenized flag is True
+        needs_tokenizer = train_data_path.endswith(".txt") or eval_data_path.endswith(".txt")
+        if needs_tokenizer:
+            print(f"Loading tokenizer from {tokenizer_path} for text file processing")
+            tokenizer = Tokenizer.load(tokenizer_path)
+        else:
+            tokenizer = None if use_pretokenized else Tokenizer.load(tokenizer_path)
     else:
         raise ValueError(f"Unsupported tokenizer type: {tokenizer_type}")
 
@@ -147,7 +157,7 @@ def main(tokenizer_path, train_data_path, eval_data_path, epochs, experiment_nam
                 # Log learning rate
                 tepoch.set_postfix(loss=f"{loss.item():.4f}")
                 train_loss += loss.item()
-                if step % 500 == 0 and step != 0:
+                if step % eval_interval == 0 and step != 0:
                     eval_step = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
                     print(f"Step {step} | Eval Loss: {eval_step}")
             train_loss /= len(train_loader)
@@ -178,10 +188,16 @@ if __name__ == "__main__":
         help="Type of tokenizer to use (default: sentencepiece). Only needed if data is in .txt format.",
     )
     parser.add_argument(
-        "--train_data", default="./toy_data/tiny_sp_train.txt", type=str, help="Path to the training data (.txt or .pt)"
+        "--train_data",
+        default="./toy_data/tiny_sp_train.txt",
+        type=str,
+        help="Path to the training data (.txt, .pt, or .bin)",
     )
     parser.add_argument(
-        "--eval_data", default="./toy_data/tiny_sp_test.txt", type=str, help="Path to the evaluation data (.txt or .pt)"
+        "--eval_data",
+        default="./toy_data/tiny_sp_test.txt",
+        type=str,
+        help="Path to the evaluation data (.txt, .pt, or .bin)",
     )
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs (default: 100)")
     parser.add_argument(
@@ -230,7 +246,22 @@ if __name__ == "__main__":
         default=dataset_config.shuffle,
         help=f"Shuffle the dataset (default: {dataset_config.shuffle})",
     )
+    parser.add_argument(
+        "--eval_interval", type=int, default=500, help="Interval for evaluation during training (default: 500 steps)"
+    )
+    parser.add_argument(
+        "--use_pretokenized", action="store_true", help="Flag to indicate input files are already tokenized"
+    )
 
     args = parser.parse_args()
 
-    main(args.tokenizer, args.train_data, args.eval_data, args.epochs, args.experiment_name, args.tokenizer_type)
+    main(
+        args.tokenizer,
+        args.train_data,
+        args.eval_data,
+        args.epochs,
+        args.experiment_name,
+        args.tokenizer_type,
+        args.eval_interval,
+        args.use_pretokenized,
+    )

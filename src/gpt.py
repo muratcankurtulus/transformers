@@ -2,6 +2,7 @@ from typing import List, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 
 from blocks import GPTDecoder
 
@@ -39,6 +40,24 @@ class GPT(nn.Module):
             n_heads,
             pos_encoding_type=pos_encoding_type,
         )
+
+        # Apply Xavier-Glorot initialization
+        self._init_weights()
+
+    def _init_weights(self):
+        """
+        Initialize the weights using Xavier-Glorot distribution.
+        """
+        for name, module in self.named_modules():
+            # Initialize linear layers
+            if isinstance(module, nn.Linear):
+                init.xavier_normal_(module.weight)
+                if module.bias is not None:
+                    init.zeros_(module.bias)
+
+            # Initialize embedding layers
+            elif isinstance(module, nn.Embedding):
+                init.xavier_normal_(module.weight)
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """
