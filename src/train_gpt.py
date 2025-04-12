@@ -1,10 +1,12 @@
 import argparse
+import math
 
 import tiktoken
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
+from torch.optim.lr_scheduler import LambdaLR, OneCycleLR, ReduceLROnPlateau
 from tqdm import tqdm
 
 from gpt import GPT
@@ -79,6 +81,61 @@ def evaluate(model, criterion, eval_loader, vocab_size):
     return total_loss / len(eval_loader)
 
 
+def get_scheduler(optimizer, scheduler_type, warmup_steps, total_steps, min_lr=1e-6):
+    """
+    Creates a learning rate scheduler.
+
+    Args:
+        optimizer: The optimizer to use
+        scheduler_type: Type of scheduler to use
+        warmup_steps: Number of warmup steps
+        total_steps: Total number of training steps
+        min_lr: Minimum learning rate
+
+    Returns:
+        A learning rate scheduler
+    """
+    if scheduler_type == "cosine":
+        # Cosine schedule with warmup
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                # Linear warmup
+                return float(current_step) / float(max(1, warmup_steps))
+            # Cosine decay after warmup
+            progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+            return max(min_lr, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+        return LambdaLR(optimizer, lr_lambda)
+
+    elif scheduler_type == "linear":
+        # Linear schedule with warmup
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                # Linear warmup
+                return float(current_step) / float(max(1, warmup_steps))
+            # Linear decay after warmup
+            return max(min_lr, float(total_steps - current_step) / float(max(1, total_steps - warmup_steps)))
+
+        return LambdaLR(optimizer, lr_lambda)
+
+    elif scheduler_type == "one_cycle":
+        return OneCycleLR(
+            optimizer,
+            max_lr=optimizer.param_groups[0]["lr"],
+            total_steps=total_steps,
+            pct_start=warmup_steps / total_steps,
+            anneal_strategy="cos",
+            final_div_factor=1.0 / min_lr if min_lr > 0 else 25,
+        )
+
+    elif scheduler_type == "plateau":
+        return ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5, min_lr=min_lr)
+
+    else:
+        # Default: no scheduler, constant learning rate
+        return None
+
+
 def main(
     tokenizer_path,
     train_data_path,
@@ -88,6 +145,10 @@ def main(
     tokenizer_type,
     eval_interval,
     use_pretokenized,
+    lr,
+    scheduler_type,
+    warmup_steps,
+    min_lr,
 ):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
@@ -117,7 +178,7 @@ def main(
     #    model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4, betas=(0.9, 0.98), eps=1e-9)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-9)
 
     # Load data and create DataLoader
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
@@ -142,7 +203,15 @@ def main(
         pin_memory=True,
     )
 
+    # Calculate total steps for scheduler
+    total_steps = len(train_loader) * epochs
+
+    # Create learning rate scheduler
+    scheduler = get_scheduler(optimizer, scheduler_type, warmup_steps, total_steps, min_lr)
+    print(f"Using {scheduler_type} scheduler with warmup steps: {warmup_steps}")
+
     # Training loop
+    global_step = 0
     for epoch in range(epochs):
         train_loss = 0
         with tqdm(train_loader, unit="batch") as tepoch:
@@ -154,16 +223,33 @@ def main(
                 loss = criterion(output.view(-1, model_config.tgt_vocab_size), tgt.view(-1))
                 loss.backward()
                 optimizer.step()
-                # Log learning rate
-                tepoch.set_postfix(loss=f"{loss.item():.4f}")
+
+                # Update learning rate scheduler
+                if scheduler and scheduler_type != "plateau":
+                    scheduler.step()
+                    current_lr = scheduler.get_last_lr()[0]
+                else:
+                    current_lr = optimizer.param_groups[0]["lr"]
+
+                # Log loss and learning rate
+                tepoch.set_postfix(loss=f"{loss.item():.4f}", lr=f"{current_lr:.6f}")
                 train_loss += loss.item()
+                global_step += 1
+
                 if step % eval_interval == 0 and step != 0:
                     eval_step = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
-                    print(f"Step {step} | Eval Loss: {eval_step}")
+                    print(f"Step {global_step} | Eval Loss: {eval_step} | LR: {current_lr:.6f}")
+
+                    # Update plateau scheduler if used
+                    if scheduler and scheduler_type == "plateau":
+                        scheduler.step(eval_step)
+
             train_loss /= len(train_loader)
 
         eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
-        print(f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss}\n")
+        print(
+            f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss} | LR: {optimizer.param_groups[0]['lr']:.6f}\n"
+        )
         if epoch % 5 == 0 and epoch != 0:
             torch.save(model.state_dict(), f"{experiment_name}_e{epoch}.pth")
             print("Model saved!")
@@ -252,6 +338,23 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_pretokenized", action="store_true", help="Flag to indicate input files are already tokenized"
     )
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        default="cosine",
+        choices=["cosine", "linear", "one_cycle", "plateau", "none"],
+        help="Learning rate scheduler type (default: cosine)",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=1000,
+        help="Number of warmup steps for learning rate scheduler (default: 1000)",
+    )
+    parser.add_argument(
+        "--min_lr", type=float, default=1e-6, help="Minimum learning rate for scheduler (default: 1e-6)"
+    )
 
     args = parser.parse_args()
 
@@ -264,4 +367,8 @@ if __name__ == "__main__":
         args.tokenizer_type,
         args.eval_interval,
         args.use_pretokenized,
+        args.lr,
+        args.scheduler,
+        args.warmup_steps,
+        args.min_lr,
     )
