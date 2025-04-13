@@ -2,7 +2,6 @@ from typing import List, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.init as init
 
 from blocks import GPTDecoder
 
@@ -17,6 +16,7 @@ class GPT(nn.Module):
         expansion_factor: int = 4,
         n_heads: int = 8,
         pos_encoding_type="rotary",
+        dropout_rate: float = 0.2,
     ):
         """
         Initialize the GPT model.
@@ -28,6 +28,8 @@ class GPT(nn.Module):
             num_layers (int, optional): Number of decoder layers. Defaults to 2.
             expansion_factor (int, optional): Expansion factor for feed-forward layers. Defaults to 4.
             n_heads (int, optional): Number of attention heads. Defaults to 8.
+            pos_encoding_type (str, optional): Type of positional encoding. Defaults to "rotary".
+            dropout_rate (float, optional): Dropout rate for regularization. Defaults to 0.2.
         """
         super().__init__()
 
@@ -38,26 +40,9 @@ class GPT(nn.Module):
             num_layers,
             expansion_factor,
             n_heads,
+            dropout_rate=dropout_rate,
             pos_encoding_type=pos_encoding_type,
         )
-
-        # Apply Xavier-Glorot initialization
-        self._init_weights()
-
-    def _init_weights(self):
-        """
-        Initialize the weights using Xavier-Glorot distribution.
-        """
-        for name, module in self.named_modules():
-            # Initialize linear layers
-            if isinstance(module, nn.Linear):
-                init.xavier_normal_(module.weight)
-                if module.bias is not None:
-                    init.zeros_(module.bias)
-
-            # Initialize embedding layers
-            elif isinstance(module, nn.Embedding):
-                init.xavier_normal_(module.weight)
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """

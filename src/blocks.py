@@ -241,6 +241,7 @@ class GPTDecoder(nn.Module):
     def forward(self, x, mask):
         x = self.word_embedding(x)
         x = self.pos_enc(x)
+        x = self.embed_dropout(x)  # Apply dropout to embeddings
 
         for layer in self.layers:
             x = layer(x, mask)

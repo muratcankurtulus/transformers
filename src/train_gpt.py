@@ -3,6 +3,8 @@ import math
 
 import tiktoken
 import torch
+import torch._dynamo
+import torch._inductor.config
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
@@ -12,6 +14,9 @@ from tqdm import tqdm
 from gpt import GPT
 from tokenizer import Tokenizer
 
+torch._inductor.config.compile_threads = 1
+torch._dynamo.config.suppress_errors = True
+
 
 class ModelConfig(BaseModel):
     embed_dim: int = 384
@@ -20,6 +25,7 @@ class ModelConfig(BaseModel):
     num_layers: int = 6
     expansion_factor: int = 4
     n_heads: int = 6
+    dropout_rate: float = 0.2
 
 
 class DatasetConfig(BaseModel):
@@ -34,7 +40,7 @@ class Dataset(torch.utils.data.Dataset):
 
         if data_path.endswith((".pt", ".bin")):
             print(f"Loading pre-tokenized data from {data_path}")
-            self.data = torch.load(data_path)
+            self.data = torch.load(data_path, weights_only=True)
         elif data_path.endswith(".txt"):
             print(f"Tokenizing data from {data_path}...")
             with open(data_path, encoding="utf-8") as f:
@@ -145,10 +151,9 @@ def main(
     tokenizer_type,
     eval_interval,
     use_pretokenized,
-    lr,
-    scheduler_type,
-    warmup_steps,
-    min_lr,
+    weight_decay,
+    early_stopping_patience,
+    dropout_rate,
 ):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
@@ -172,13 +177,24 @@ def main(
         num_layers=args.num_layers,
         expansion_factor=args.expansion_factor,
         n_heads=args.n_heads,
+        dropout_rate=dropout_rate,
     )
     model = GPT(**model_config.model_dump()).to("cuda")
     print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
-    #    model = torch.compile(model)
+    # Disable compilation as it's causing segmentation faults
+    # try:
+    #     model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+    #     print("Model successfully compiled with torch.compile")
+    # except Exception as e:
+    #     print(f"Failed to compile model: {e}")
+    #     print("Falling back to eager mode")
+    print("Using eager mode (torch.compile disabled)")
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.98), eps=1e-9)
+    # Add weight decay to prevent overfitting
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=weight_decay, betas=(0.9, 0.98), eps=1e-9)
+    # Add learning rate scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5, verbose=True)
 
     # Load data and create DataLoader
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
@@ -203,12 +219,16 @@ def main(
         pin_memory=True,
     )
 
-    # Calculate total steps for scheduler
-    total_steps = len(train_loader) * epochs
+    # Early stopping setup
+    best_loss = float("inf")
+    early_stopping_counter = 0
+    best_model_path = f"{experiment_name}_best.pth"
 
-    # Create learning rate scheduler
-    scheduler = get_scheduler(optimizer, scheduler_type, warmup_steps, total_steps, min_lr)
-    print(f"Using {scheduler_type} scheduler with warmup steps: {warmup_steps}")
+    print(
+        f"Training with dropout_rate={dropout_rate}, \
+          weight_decay={weight_decay}, \
+          early_stopping_patience={early_stopping_patience}"
+    )
 
     # Training loop
     global_step = 0
@@ -224,35 +244,79 @@ def main(
                 loss.backward()
                 optimizer.step()
 
-                # Update learning rate scheduler
-                if scheduler and scheduler_type != "plateau":
-                    scheduler.step()
-                    current_lr = scheduler.get_last_lr()[0]
-                else:
-                    current_lr = optimizer.param_groups[0]["lr"]
-
                 # Log loss and learning rate
+                current_lr = optimizer.param_groups[0]["lr"]
                 tepoch.set_postfix(loss=f"{loss.item():.4f}", lr=f"{current_lr:.6f}")
                 train_loss += loss.item()
                 global_step += 1
 
-                if step % eval_interval == 0 and step != 0:
-                    eval_step = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
-                    print(f"Step {global_step} | Eval Loss: {eval_step} | LR: {current_lr:.6f}")
+                # Evaluate more frequently as training progresses
+                # Start with normal interval, then reduce near the end
+                dynamic_interval = max(100, eval_interval - (epoch * 50))
 
-                    # Update plateau scheduler if used
-                    if scheduler and scheduler_type == "plateau":
-                        scheduler.step(eval_step)
+                if step % dynamic_interval == 0 and step != 0:
+                    eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
+                    print(f"Step {global_step} | Eval Loss: {eval_loss:.4f} | LR: {current_lr:.6f}")
+
+                    # Update scheduler
+                    scheduler.step(eval_loss)
+
+                    # Early stopping check
+                    if eval_loss < best_loss:
+                        best_loss = eval_loss
+                        early_stopping_counter = 0
+                        # Save best model
+                        torch.save(model.state_dict(), best_model_path)
+                        print(f"New best model saved! Loss: {best_loss:.4f}")
+                    else:
+                        early_stopping_counter += 1
+                        print(f"No improvement for {early_stopping_counter} evaluations")
+                        if early_stopping_counter >= early_stopping_patience:
+                            print(
+                                f"Early stopping triggered after {early_stopping_patience} evaluations without improvement"
+                            )
+                            print(f"Best eval loss: {best_loss:.4f}")
+                            # Load best model for final evaluation
+                            model.load_state_dict(torch.load(best_model_path))
+                            return
 
             train_loss /= len(train_loader)
 
+        # Epoch-level evaluation
         eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
         print(
-            f"Epoch {epoch} | Train Loss: {train_loss} | Eval Loss: {eval_loss} | LR: {optimizer.param_groups[0]['lr']:.6f}\n"
+            f"Epoch {epoch} | \
+              Train Loss: {train_loss:.4f} | \
+              Eval Loss: {eval_loss:.4f} | \
+              LR: {optimizer.param_groups[0]['lr']:.6f}\n"
         )
+
+        # Update scheduler with epoch-level loss
+        scheduler.step(eval_loss)
+
+        # Early stopping check
+        if eval_loss < best_loss:
+            best_loss = eval_loss
+            early_stopping_counter = 0
+            # Save best model
+            torch.save(model.state_dict(), best_model_path)
+            print(f"New best model saved! Loss: {best_loss:.4f}")
+        else:
+            early_stopping_counter += 1
+            print(f"No improvement for {early_stopping_counter} evaluations")
+            if early_stopping_counter >= early_stopping_patience:
+                print(f"Early stopping triggered after {early_stopping_patience} evaluations without improvement")
+                print(f"Best eval loss: {best_loss:.4f}")
+                break
+
+        # Also save regular checkpoints
         if epoch % 5 == 0 and epoch != 0:
             torch.save(model.state_dict(), f"{experiment_name}_e{epoch}.pth")
-            print("Model saved!")
+            print(f"Checkpoint saved at epoch {epoch}")
+
+    print(f"Training completed. Best eval loss: {best_loss:.4f}")
+    # Load best model for final use
+    model.load_state_dict(torch.load(best_model_path))
 
 
 if __name__ == "__main__":
@@ -338,23 +402,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--use_pretokenized", action="store_true", help="Flag to indicate input files are already tokenized"
     )
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate (default: 1e-4)")
     parser.add_argument(
-        "--scheduler",
-        type=str,
-        default="cosine",
-        choices=["cosine", "linear", "one_cycle", "plateau", "none"],
-        help="Learning rate scheduler type (default: cosine)",
+        "--weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer (default: 0.01)"
     )
     parser.add_argument(
-        "--warmup_steps",
+        "--early_stopping_patience",
         type=int,
-        default=1000,
-        help="Number of warmup steps for learning rate scheduler (default: 1000)",
+        default=5,
+        help="Number of evaluations with no improvement before early stopping (default: 5)",
     )
-    parser.add_argument(
-        "--min_lr", type=float, default=1e-6, help="Minimum learning rate for scheduler (default: 1e-6)"
-    )
+    parser.add_argument("--dropout_rate", type=float, default=0.3, help="Dropout rate for the model (default: 0.3)")
 
     args = parser.parse_args()
 
@@ -367,8 +424,7 @@ if __name__ == "__main__":
         args.tokenizer_type,
         args.eval_interval,
         args.use_pretokenized,
-        args.lr,
-        args.scheduler,
-        args.warmup_steps,
-        args.min_lr,
+        args.weight_decay,
+        args.early_stopping_patience,
+        args.dropout_rate,
     )

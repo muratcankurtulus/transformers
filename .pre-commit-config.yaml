@@ -19,6 +19,16 @@ repos:
         args:
           - --allow-missing-credentials
 
+  - repo: https://github.com/PyCQA/autoflake
+    rev: v2.2.1
+    hooks:
+      - id: autoflake
+        name: Remove unused imports
+        args:
+          - --remove-all-unused-imports
+          - --remove-unused-variables
+          - --in-place
+
   - repo: https://github.com/asottile/pyupgrade
     rev: v3.15.2
     hooks:
