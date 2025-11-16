@@ -2,7 +2,9 @@ __pycache__
 env/
 runs/
 cpp/
-/toy_data
+/data_prep/*.gz
+/data_prep/*.txt
+/data_prep/*.path
 *.pth
 .ipynb_checkpoints
 *.ipynb
