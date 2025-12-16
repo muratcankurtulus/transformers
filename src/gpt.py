@@ -11,7 +11,6 @@ class GPT(nn.Module):
         self,
         tgt_vocab_size: int,
         embed_dim: int,
-        seq_len: int,
         num_layers: int = 2,
         expansion_factor: int = 4,
         n_heads: int = 8,
@@ -24,7 +23,6 @@ class GPT(nn.Module):
         Args:
             tgt_vocab_size (int): Target vocabulary size.
             embed_dim (int): Embedding dimension.
-            seq_len (int): Sequence length.
             num_layers (int, optional): Number of decoder layers. Defaults to 2.
             expansion_factor (int, optional): Expansion factor for feed-forward layers. Defaults to 4.
             n_heads (int, optional): Number of attention heads. Defaults to 8.
@@ -36,7 +34,6 @@ class GPT(nn.Module):
         self.decoder = GPTDecoder(
             tgt_vocab_size,
             embed_dim,
-            seq_len,
             num_layers,
             expansion_factor,
             n_heads,

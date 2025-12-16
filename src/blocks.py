@@ -189,11 +189,21 @@ class MultiHeadAttention(nn.Module):
 
 
 class GPTDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, pos_encoding_type="rotary", dropout_rate=0.2):
+    def __init__(
+        self,
+        embed_dim,
+        expansion_factor=4,
+        n_heads=8,
+        pos_encoding_type="rotary",
+        dropout_rate=0.2,
+    ):
         super().__init__()
 
         self.attention = MultiHeadAttention(
-            embed_dim, n_heads, pos_encoding_type=pos_encoding_type, dropout_rate=dropout_rate
+            embed_dim,
+            n_heads,
+            pos_encoding_type=pos_encoding_type,
+            dropout_rate=dropout_rate,
         )
         self.norm_0 = nn.LayerNorm(embed_dim)
         self.norm_1 = nn.LayerNorm(embed_dim)
@@ -217,7 +227,6 @@ class GPTDecoder(nn.Module):
         self,
         target_vocab_size,
         embed_dim,
-        seq_len,
         num_layers=2,
         expansion_factor=4,
         n_heads=8,
@@ -228,7 +237,6 @@ class GPTDecoder(nn.Module):
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
         self.embed_dropout = nn.Dropout(dropout_rate)
-        self.pos_enc = PositionalEncoding(seq_len, embed_dim)
         self.layers = nn.ModuleList(
             [
                 GPTDecoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type, dropout_rate)
@@ -240,8 +248,7 @@ class GPTDecoder(nn.Module):
 
     def forward(self, x, mask):
         x = self.word_embedding(x)
-        x = self.pos_enc(x)
-        x = self.embed_dropout(x)  # Apply dropout to embeddings
+        x = self.embed_dropout(x)
 
         for layer in self.layers:
             x = layer(x, mask)
