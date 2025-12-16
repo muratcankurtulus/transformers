@@ -4,7 +4,8 @@ runs/
 cpp/
 /data_prep/*.gz
 /data_prep/*.txt
-/data_prep/*.path
+/data_prep/*.paths
+/data_prep/*.ftz
 *.pth
 .ipynb_checkpoints
 *.ipynb
