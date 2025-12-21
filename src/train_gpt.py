@@ -1,6 +1,8 @@
 import argparse
 import math
+import struct
 
+import numpy as np
 import tiktoken
 import torch
 import torch._dynamo
@@ -33,14 +35,74 @@ class DatasetConfig(BaseModel):
     shuffle: bool = True
 
 
+def read_bin_header(file_path: str) -> dict:
+    """Read header from a .bin tokenized file.
+
+    Args:
+        file_path: Path to the .bin file
+
+    Returns:
+        Dict with 'dtype', 'token_count', 'data_offset'
+    """
+    with open(file_path, "rb") as f:
+        magic = f.read(4)
+        if magic != b"BPE1":
+            raise ValueError(f"Invalid magic bytes in {file_path}: {magic}")
+
+        dtype_size = struct.unpack("B", f.read(1))[0]
+        token_count = struct.unpack("<Q", f.read(8))[0]
+
+        dtype = np.uint16 if dtype_size == 2 else np.uint32
+
+        return {
+            "dtype": dtype,
+            "token_count": token_count,
+            "data_offset": 13,  # 4 + 1 + 8 bytes header
+        }
+
+
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, data_path, seq_len, tokenizer, tokenizer_type):
+    """Efficient dataset for training GPT models.
+
+    Supports:
+    - .bin files (memory-mapped, most efficient)
+    - .pt files (PyTorch tensors)
+    - .txt files (tokenized on-the-fly, slow)
+
+    The .bin format uses memory-mapping for minimal RAM usage even with
+    large datasets. No valid_indices list is built - we compute indices
+    directly for O(1) memory overhead.
+    """
+
+    def __init__(self, data_path: str, seq_len: int, tokenizer, tokenizer_type: str):
         self.seq_len = seq_len
         self.tokenizer = tokenizer
+        self.data_path = data_path
+        self._mmap = None  # For .bin files
 
-        if data_path.endswith((".pt", ".bin")):
+        if data_path.endswith(".bin"):
+            print(f"Loading memory-mapped data from {data_path}")
+            header = read_bin_header(data_path)
+            self.dtype = header["dtype"]
+            self.token_count = header["token_count"]
+            self.data_offset = header["data_offset"]
+
+            # Memory-map the file for efficient access
+            # offset must be a multiple of mmap.ALLOCATIONGRANULARITY on Windows
+            # We'll read the full file but skip the header manually
+            self._mmap = np.memmap(data_path, dtype=np.uint8, mode="r")
+            self.data = np.frombuffer(self._mmap[self.data_offset :], dtype=self.dtype).astype(
+                np.int64
+            )  # Convert to int64 for PyTorch
+            print(f"Loaded {len(self.data):,} tokens via memory-map")
+
+        elif data_path.endswith(".pt"):
             print(f"Loading pre-tokenized data from {data_path}")
             self.data = torch.load(data_path, weights_only=True)
+            if isinstance(self.data, torch.Tensor):
+                self.data = self.data.numpy()
+            print(f"Loaded {len(self.data):,} tokens")
+
         elif data_path.endswith(".txt"):
             print(f"Tokenizing data from {data_path}...")
             with open(data_path, encoding="utf-8") as f:
@@ -51,23 +113,37 @@ class Dataset(torch.utils.data.Dataset):
             else:
                 encoded_data = self.tokenizer.encode(data)
 
-            self.data = torch.tensor(encoded_data)
-            print("Tokenization complete.")
+            self.data = np.array(encoded_data, dtype=np.int64)
+            print(f"Tokenized {len(self.data):,} tokens")
+
         else:
             raise ValueError(f"Unsupported data file format: {data_path}. Please use .txt, .pt, or .bin")
 
-        # Pre-calculate valid indices
-        self.valid_indices = [i for i in range(len(self.data)) if i + self.seq_len + 1 <= len(self.data)]
-        print(f"Found {len(self.valid_indices)} valid sequences.")
+        # Compute valid sequence count directly - no list allocation!
+        # Each valid starting position i must satisfy: i + seq_len + 1 <= len(data)
+        # So i can be 0, 1, ..., len(data) - seq_len - 1
+        self._num_sequences = max(0, len(self.data) - self.seq_len)
+        print(f"Found {self._num_sequences:,} valid sequences")
 
-    def __len__(self):
-        return len(self.valid_indices)
+    def __len__(self) -> int:
+        return self._num_sequences
 
-    def __getitem__(self, idx):
-        real_idx = self.valid_indices[idx]
-        src = self.data[real_idx : real_idx + self.seq_len]
-        tgt = self.data[real_idx + 1 : real_idx + self.seq_len + 1]
+    def __getitem__(self, idx: int):
+        # Direct indexing - no lookup table needed
+        src = self.data[idx : idx + self.seq_len]
+        tgt = self.data[idx + 1 : idx + self.seq_len + 1]
+
+        # Convert to torch tensors
+        if isinstance(src, np.ndarray):
+            src = torch.from_numpy(src.copy()).long()
+            tgt = torch.from_numpy(tgt.copy()).long()
+
         return src, tgt
+
+    def __del__(self):
+        # Clean up memory map
+        if self._mmap is not None:
+            del self._mmap
 
 
 @torch.no_grad()
@@ -179,7 +255,9 @@ def main(
         n_heads=args.n_heads,
         dropout_rate=dropout_rate,
     )
-    model = GPT(**model_config.model_dump()).to("cuda")
+    # Exclude seq_len from model config - it's only used for Dataset
+    gpt_params = {k: v for k, v in model_config.model_dump().items() if k != "seq_len"}
+    model = GPT(**gpt_params).to("cuda")
     print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
     # Disable compilation as it's causing segmentation faults
     # try:
@@ -194,7 +272,7 @@ def main(
     # Add weight decay to prevent overfitting
     optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=weight_decay, betas=(0.9, 0.98), eps=1e-9)
     # Add learning rate scheduler
-    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5)
 
     # Load data and create DataLoader
     dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)

@@ -12,7 +12,8 @@ TARGET_LANG = "__label__en"
 CONFIDENCE_THRESHOLD = 0.9
 OUTPUT_CORPUS_FILE = "my_corpus_en.txt"
 WET_FILES = [
-    "CC-MAIN-20251005114239-20251005144239-00000.warc.wet.gz",
+    "./wet/CC-MAIN-20251005114239-20251005144239-00000.warc.wet.gz",
+    #    "./wet/CC-MAIN-20251005114239-20251005144239-00001.warc.wet.gz",
 ]
 
 # --- Pre-compile regex for efficiency ---

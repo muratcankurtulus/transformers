@@ -11,3 +11,9 @@ cpp/
 *.ipynb
 *.egg-info
 build/
+
+
+	.cursor/
+	artifacts/
+	data_prep/*.bin
+	data_prep/wet/
