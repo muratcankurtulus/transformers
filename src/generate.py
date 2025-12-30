@@ -30,7 +30,9 @@ if __name__ == "__main__":
         seq_len=args.seq_len,
         tgt_vocab_size=args.tgt_vocab_size,
     )
-    model = GPT(**model_config.model_dump()).to("cuda")
+    # Exclude seq_len from model config - GPT doesn't use it
+    gpt_params = {k: v for k, v in model_config.model_dump().items() if k != "seq_len"}
+    model = GPT(**gpt_params).to("cuda")
     model.eval()
 
     tokenizer = Tokenizer.load(args.tokenizer_path)

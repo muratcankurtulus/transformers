@@ -150,17 +150,22 @@ class Dataset(torch.utils.data.Dataset):
 def evaluate(model, criterion, eval_loader, vocab_size):
     model.eval()
     total_loss = 0
+    total_tokens = 0
     with tqdm(eval_loader, unit="batch") as tepoch:
         for src, tgt in tepoch:
             src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
             mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
             output = model(src, mask)
             loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
-            total_loss += loss.item()
-            tepoch.set_postfix(eval_loss=f"{loss.item():.4f}")
+            num_tokens = tgt.numel()
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
+            avg_loss = total_loss / total_tokens
+            perplexity = math.exp(avg_loss)
+            tepoch.set_postfix(eval_loss=f"{avg_loss:.4f}", perplexity=f"{perplexity:.4f}")
 
     model.train()
-    return total_loss / len(eval_loader)
+    return avg_loss
 
 
 def get_scheduler(optimizer, scheduler_type, warmup_steps, total_steps, min_lr=1e-6):
@@ -230,6 +235,14 @@ def main(
     weight_decay,
     early_stopping_patience,
     dropout_rate,
+    embed_dim,
+    tgt_vocab_size,
+    seq_len,
+    num_layers,
+    expansion_factor,
+    n_heads,
+    batch_size,
+    shuffle,
 ):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
@@ -247,12 +260,12 @@ def main(
 
     # Model configuration
     model_config = ModelConfig(
-        embed_dim=args.embed_dim,
-        tgt_vocab_size=args.tgt_vocab_size,
-        seq_len=args.seq_len,
-        num_layers=args.num_layers,
-        expansion_factor=args.expansion_factor,
-        n_heads=args.n_heads,
+        embed_dim=embed_dim,
+        tgt_vocab_size=tgt_vocab_size,
+        seq_len=seq_len,
+        num_layers=num_layers,
+        expansion_factor=expansion_factor,
+        n_heads=n_heads,
         dropout_rate=dropout_rate,
     )
     # Exclude seq_len from model config - it's only used for Dataset
@@ -275,7 +288,7 @@ def main(
     scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-5)
 
     # Load data and create DataLoader
-    dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=args.shuffle)
+    dataset_config = DatasetConfig(batch_size=batch_size, shuffle=shuffle)
     # Pass data paths directly to Dataset constructor
     train_dataset = Dataset(train_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     train_loader = torch.utils.data.DataLoader(
@@ -287,7 +300,7 @@ def main(
     )
 
     # Use shuffle=False for eval loader config
-    eval_dataset_config = DatasetConfig(batch_size=args.batch_size, shuffle=False)  # Create separate config for eval
+    eval_dataset_config = DatasetConfig(batch_size=batch_size, shuffle=False)  # Create separate config for eval
     eval_dataset = Dataset(eval_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     eval_loader = torch.utils.data.DataLoader(
         eval_dataset,
@@ -489,7 +502,12 @@ if __name__ == "__main__":
         default=5,
         help="Number of evaluations with no improvement before early stopping (default: 5)",
     )
-    parser.add_argument("--dropout_rate", type=float, default=0.3, help="Dropout rate for the model (default: 0.3)")
+    parser.add_argument(
+        "--dropout_rate",
+        type=float,
+        default=model_config.dropout_rate,
+        help=f"Dropout rate for the model (default: {model_config.dropout_rate})",
+    )
 
     args = parser.parse_args()
 
@@ -505,4 +523,12 @@ if __name__ == "__main__":
         args.weight_decay,
         args.early_stopping_patience,
         args.dropout_rate,
+        args.embed_dim,
+        args.tgt_vocab_size,
+        args.seq_len,
+        args.num_layers,
+        args.expansion_factor,
+        args.n_heads,
+        args.batch_size,
+        args.shuffle,
     )
