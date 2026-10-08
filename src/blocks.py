@@ -284,7 +284,7 @@ class TransformerEncoderBlock(nn.Module):
         self.dropout2 = nn.Dropout(dropout_rate)
 
     def forward(self, key, query, value):
-        attention = self.attention(key, query, value)  # 32x10x512
+        attention = self.attention(query=query, key=key, value=value)  # 32x10x512
 
         norm1_out = self.dropout1(self.norm1(attention + query))  # 32x10x512
         ff_out = self.feed_forward(norm1_out)  # 32x10x512 -> #32x10x2048 -> 32x10x512
