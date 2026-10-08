@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 from collections import Counter
 from functools import lru_cache
@@ -20,8 +22,9 @@ class Tokenizer:
         merges (Dict[Tuple[int, int], int]): The merge operations for BPE.
     """
 
-    SPECIAL_TOKENS = {"<PAD>": 0, "<UNK>": 1, "<BOS>": 2, "<EOS>": 3}
     BASE_VOCAB_SIZE = 256
+    SPECIAL_TOKENS = {"<PAD>": 256, "<UNK>": 257, "<BOS>": 258, "<EOS>": 259}
+    FORMAT_VERSION = 2
 
     # GPT-2 style pre-tokenization regex pattern
     # Splits text into words, numbers, punctuation, and whitespace
@@ -33,16 +36,84 @@ class Tokenizer:
         """Initializes the Tokenizer with a given vocabulary size.
 
         Args:
-            vocab_size (int): The size of the vocabulary. Default is 1024.
+            vocab_size (int): Target vocabulary size, including bytes and specials. Must be at least 260.
             cache_size (int): Size of LRU cache for encoding pieces. Default is 10000.
         """
-        self.vocab_size = vocab_size
+        minimum_size = self.BASE_VOCAB_SIZE + len(self.SPECIAL_TOKENS)
+        if vocab_size < minimum_size:
+            raise ValueError(f"vocab_size must be at least {minimum_size} to hold all bytes and special tokens")
+        self._target_vocab_size = vocab_size
         self.vocab = {idx: bytes([idx]) for idx in range(self.BASE_VOCAB_SIZE)}
         self.vocab.update({v: k.encode("utf-8") for k, v in self.SPECIAL_TOKENS.items()})
         self.merges: Dict[Tuple[int, int], int] = {}
         self._merge_ranks: Dict[Tuple[int, int], int] = {}  # pair -> rank (lower = merge first)
         self._cache_size = cache_size
         self._encode_piece_cached = None  # Will be set after load/train
+
+    @property
+    def vocab_size(self) -> int:
+        """Embedding/output capacity required by the actual token ID range."""
+        return max(self.vocab) + 1
+
+    def _validate_vocab(self) -> None:
+        """Require all bytes, separate specials, and consecutive, lossless BPE merges."""
+        expected = {idx: bytes([idx]) for idx in range(self.BASE_VOCAB_SIZE)}
+        first_merge_id = self.BASE_VOCAB_SIZE + len(self.SPECIAL_TOKENS)
+        for expected_id, ((a, b), idx) in enumerate(
+            sorted(self.merges.items(), key=lambda item: item[1]), first_merge_id
+        ):
+            if idx != expected_id or a not in expected or b not in expected:
+                raise ValueError(
+                    "Incompatible tokenizer merge IDs. Retrain the tokenizer and regenerate tokenized data."
+                )
+            expected[idx] = expected[a] + expected[b]
+        expected.update({idx: token.encode("utf-8") for token, idx in self.SPECIAL_TOKENS.items()})
+        if self.vocab != expected:
+            raise ValueError(
+                "Incompatible tokenizer byte/special IDs. Retrain the tokenizer and regenerate tokenized data."
+            )
+
+    @property
+    def metadata(self) -> dict:
+        """Identity used to prevent mixing tokenizers, encoded data, and checkpoints."""
+        specification = {
+            "format_version": self.FORMAT_VERSION,
+            "special_tokens": self.SPECIAL_TOKENS,
+            "pattern": self._GPT2_PAT.pattern,
+            "vocab": [(idx, value.hex()) for idx, value in sorted(self.vocab.items())],
+            "merges": [(a, b, idx) for (a, b), idx in sorted(self.merges.items(), key=lambda item: item[1])],
+        }
+        fingerprint = hashlib.sha256(json.dumps(specification, sort_keys=True).encode("utf-8")).hexdigest()
+        return {"format_version": self.FORMAT_VERSION, "vocab_size": self.vocab_size, "fingerprint": fingerprint}
+
+    def validate_metadata(self, metadata: dict | None, artifact: str) -> None:
+        """Reject artifacts with a legacy or different tokenizer identity."""
+        if metadata != self.metadata:
+            raise ValueError(
+                f"Incompatible or missing tokenizer identity in {artifact}. "
+                "Retrain legacy tokenizers, regenerate tokenized data, and train new checkpoints with the same tokenizer."
+            )
+
+    def save_metadata(self, file_path: str) -> None:
+        """Write tokenizer identity alongside an encoded dataset or saved tokenizer."""
+        self._validate_vocab()
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, sort_keys=True)
+            f.write("\n")
+
+    def validate_saved_metadata(self, file_path: str) -> None:
+        """Read and verify tokenizer identity, rejecting unversioned artifacts."""
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                metadata = json.load(f)
+        except FileNotFoundError:
+            metadata = None
+        self.validate_metadata(metadata, file_path)
+
+    def validate_vocab_size(self, vocab_size: int) -> None:
+        """Require the model to cover exactly the valid token IDs."""
+        if vocab_size != self.vocab_size:
+            raise ValueError(f"tgt_vocab_size must match the tokenizer's actual vocabulary size: {self.vocab_size}")
 
     def _build_merge_ranks(self) -> None:
         """Build merge_ranks from merges dict. Lower rank = higher priority merge."""
@@ -254,7 +325,7 @@ class Tokenizer:
         # word_freqs now contains {tuple[int, ...]: frequency}
         # We'll iteratively merge the most frequent pair
 
-        num_merges = self.vocab_size - self.BASE_VOCAB_SIZE - len(self.SPECIAL_TOKENS)
+        num_merges = self._target_vocab_size - self.BASE_VOCAB_SIZE - len(self.SPECIAL_TOKENS)
 
         iterator = range(num_merges)
         if show_progress:
@@ -292,6 +363,7 @@ class Tokenizer:
         for (a, b), idx in tqdm(self.merges.items(), desc="Building vocab"):
             self.vocab[idx] = self.vocab[a] + self.vocab[b]
 
+        self._validate_vocab()
         # Build merge ranks for fast encoding
         self._build_merge_ranks()
 
@@ -327,10 +399,12 @@ class Tokenizer:
         Args:
             directory (str): The directory where the tokenizer data will be saved.
         """
+        self._validate_vocab()
         if not os.path.exists(directory):
             os.makedirs(directory)
         joblib.dump(self.merges, os.path.join(directory, "merges"))
         joblib.dump(self.vocab, os.path.join(directory, "vocab"))
+        self.save_metadata(os.path.join(directory, "metadata.json"))
 
     @classmethod
     def load(cls, directory: str) -> "Tokenizer":
@@ -343,11 +417,19 @@ class Tokenizer:
         Returns:
             Tokenizer: The loaded Tokenizer instance.
         """
+        metadata_path = os.path.join(directory, "metadata.json")
+        if not os.path.isfile(metadata_path):
+            raise ValueError(
+                "Legacy tokenizer without metadata.json. Retrain the tokenizer, regenerate tokenized data, "
+                "and train new checkpoints; the old byte/special IDs are ambiguous."
+            )
         merges = joblib.load(os.path.join(directory, "merges"))
         vocab = joblib.load(os.path.join(directory, "vocab"))
         tokenizer = cls()
         tokenizer.merges = merges
         tokenizer.vocab = vocab
+        tokenizer._validate_vocab()
+        tokenizer.validate_saved_metadata(metadata_path)
         tokenizer._build_merge_ranks()  # Build ranks for fast encoding
         return tokenizer
 

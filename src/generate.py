@@ -1,10 +1,8 @@
 import argparse
 
-import torch
-
 from gpt import GPT
 from tokenizer import Tokenizer
-from train_gpt import ModelConfig
+from train_gpt import ModelConfig, load_checkpoint_state
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GPT generate")
@@ -21,6 +19,10 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer_path", type=str, help="Path to vocab file", required=True)
     args = parser.parse_args()
 
+    tokenizer = Tokenizer.load(args.tokenizer_path)
+    tokenizer.validate_vocab_size(args.tgt_vocab_size)
+    state = load_checkpoint_state(args.model_path, tokenizer)
+
     model_config = ModelConfig(
         embed_dim=args.embed_dim,
         n_heads=args.n_heads,
@@ -35,8 +37,7 @@ if __name__ == "__main__":
     model = GPT(**gpt_params).to("cuda")
     model.eval()
 
-    tokenizer = Tokenizer.load(args.tokenizer_path)
-    model.load_state_dict(torch.load(args.model_path))
+    model.load_state_dict(state)
     prompt = tokenizer.encode(args.prompt)
     generated = model.generate(prompt, args.length)
     generated_text = tokenizer.decode(generated)

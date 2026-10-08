@@ -35,6 +35,24 @@ class DatasetConfig(BaseModel):
     shuffle: bool = True
 
 
+def save_checkpoint(model, file_path: str, tokenizer) -> None:
+    """Save weights with the custom tokenizer identity required to interpret their IDs."""
+    state = model.state_dict()
+    if isinstance(tokenizer, Tokenizer):
+        state = {"model_state_dict": state, "tokenizer": tokenizer.metadata}
+    torch.save(state, file_path)
+
+
+def load_checkpoint_state(file_path: str, tokenizer) -> dict:
+    """Load weights only after verifying the custom tokenizer identity."""
+    checkpoint = torch.load(file_path, map_location="cpu", weights_only=True)
+    if isinstance(tokenizer, Tokenizer):
+        metadata = checkpoint.get("tokenizer") if isinstance(checkpoint, dict) else None
+        tokenizer.validate_metadata(metadata, file_path)
+        return checkpoint["model_state_dict"]
+    return checkpoint
+
+
 def read_bin_header(file_path: str) -> dict:
     """Read header from a .bin tokenized file.
 
@@ -79,6 +97,11 @@ class Dataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.data_path = data_path
         self._mmap = None  # For .bin files
+
+        if tokenizer_type == "default" and data_path.endswith((".bin", ".pt")):
+            if tokenizer is None:
+                raise ValueError("A tokenizer is required to validate pretokenized data; provide --tokenizer.")
+            tokenizer.validate_saved_metadata(data_path + ".tokenizer.json")
 
         if data_path.endswith(".bin"):
             print(f"Loading memory-mapped data from {data_path}")
@@ -248,13 +271,9 @@ def main(
     if tokenizer_type == "tiktoken":
         tokenizer = tiktoken.get_encoding("cl100k_base")  # or another model like "p50k_base"
     elif tokenizer_type == "default":
-        # Only set tokenizer to None if BOTH files are pretokenized AND use_pretokenized flag is True
-        needs_tokenizer = train_data_path.endswith(".txt") or eval_data_path.endswith(".txt")
-        if needs_tokenizer:
-            print(f"Loading tokenizer from {tokenizer_path} for text file processing")
-            tokenizer = Tokenizer.load(tokenizer_path)
-        else:
-            tokenizer = None if use_pretokenized else Tokenizer.load(tokenizer_path)
+        # Pretokenized data still requires its tokenizer to verify ID compatibility.
+        tokenizer = Tokenizer.load(tokenizer_path)
+        tokenizer.validate_vocab_size(tgt_vocab_size)
     else:
         raise ValueError(f"Unsupported tokenizer type: {tokenizer_type}")
 
@@ -268,6 +287,8 @@ def main(
         n_heads=n_heads,
         dropout_rate=dropout_rate,
     )
+    train_dataset = Dataset(train_data_path, model_config.seq_len, tokenizer, tokenizer_type)
+    eval_dataset = Dataset(eval_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     # Exclude seq_len from model config - it's only used for Dataset
     gpt_params = {k: v for k, v in model_config.model_dump().items() if k != "seq_len"}
     model = GPT(**gpt_params).to("cuda")
@@ -290,7 +311,6 @@ def main(
     # Load data and create DataLoader
     dataset_config = DatasetConfig(batch_size=batch_size, shuffle=shuffle)
     # Pass data paths directly to Dataset constructor
-    train_dataset = Dataset(train_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=dataset_config.batch_size,
@@ -301,7 +321,6 @@ def main(
 
     # Use shuffle=False for eval loader config
     eval_dataset_config = DatasetConfig(batch_size=batch_size, shuffle=False)  # Create separate config for eval
-    eval_dataset = Dataset(eval_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     eval_loader = torch.utils.data.DataLoader(
         eval_dataset,
         batch_size=eval_dataset_config.batch_size,  # Use eval config batch size
@@ -357,7 +376,7 @@ def main(
                         best_loss = eval_loss
                         early_stopping_counter = 0
                         # Save best model
-                        torch.save(model.state_dict(), best_model_path)
+                        save_checkpoint(model, best_model_path, tokenizer)
                         print(f"New best model saved! Loss: {best_loss:.4f}")
                     else:
                         early_stopping_counter += 1
@@ -368,7 +387,7 @@ def main(
                             )
                             print(f"Best eval loss: {best_loss:.4f}")
                             # Load best model for final evaluation
-                            model.load_state_dict(torch.load(best_model_path))
+                            model.load_state_dict(load_checkpoint_state(best_model_path, tokenizer))
                             return
 
             train_loss /= len(train_loader)
@@ -390,7 +409,7 @@ def main(
             best_loss = eval_loss
             early_stopping_counter = 0
             # Save best model
-            torch.save(model.state_dict(), best_model_path)
+            save_checkpoint(model, best_model_path, tokenizer)
             print(f"New best model saved! Loss: {best_loss:.4f}")
         else:
             early_stopping_counter += 1
@@ -402,12 +421,12 @@ def main(
 
         # Also save regular checkpoints
         if epoch % 5 == 0 and epoch != 0:
-            torch.save(model.state_dict(), f"{experiment_name}_e{epoch}.pth")
+            save_checkpoint(model, f"{experiment_name}_e{epoch}.pth", tokenizer)
             print(f"Checkpoint saved at epoch {epoch}")
 
     print(f"Training completed. Best eval loss: {best_loss:.4f}")
     # Load best model for final use
-    model.load_state_dict(torch.load(best_model_path))
+    model.load_state_dict(load_checkpoint_state(best_model_path, tokenizer))
 
 
 if __name__ == "__main__":
@@ -491,7 +510,9 @@ if __name__ == "__main__":
         "--eval_interval", type=int, default=500, help="Interval for evaluation during training (default: 500 steps)"
     )
     parser.add_argument(
-        "--use_pretokenized", action="store_true", help="Flag to indicate input files are already tokenized"
+        "--use_pretokenized",
+        action="store_true",
+        help="Flag to indicate input files are already tokenized; --tokenizer is still required for compatibility checks",
     )
     parser.add_argument(
         "--weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer (default: 0.01)"

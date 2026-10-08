@@ -116,6 +116,11 @@ def pretokenize_file_streaming(
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
+    # Invalidate any previous identity before replacing the token data.
+    metadata_path = output_file + ".tokenizer.json"
+    if os.path.exists(metadata_path):
+        os.remove(metadata_path)
+
     start_time = time.time()
     bytes_read = 0
     total_tokens = 0
@@ -217,6 +222,9 @@ def pretokenize_file_streaming(
         total_tokens = len(all_tokens)
         data_tensor = torch.tensor(all_tokens, dtype=torch.long)
         torch.save(data_tensor, output_file)
+
+    if tokenizer_type == "default":
+        tokenizer.save_metadata(metadata_path)
 
     elapsed_time = time.time() - start_time
     tokens_per_sec = total_tokens / elapsed_time if elapsed_time > 0 else 0
