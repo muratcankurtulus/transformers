@@ -49,6 +49,16 @@ Options:
 - `--max_bytes`: Limit training data by bytes (recommended for large files)
 - `--max_lines`: Limit training data by line count
 
+The custom tokenizer keeps bytes at IDs 0–255, reserves IDs 256–259 for PAD/UNK/BOS/EOS,
+and starts BPE merges at 260. The minimum vocabulary size is 260. Training prints the actual
+vocabulary size; use that value for `--tgt_vocab_size` in training and generation, since a small
+corpus may produce fewer merges than requested.
+
+Tokenizers saved with the old overlapping byte/special IDs are incompatible. Retrain the tokenizer
+in a new directory, regenerate **both training and evaluation token data from the original text**,
+and train new checkpoints. The old IDs 0–3 are ambiguous, so no automatic migration is provided.
+New tokenizer directories include `metadata.json`; unversioned tokenizers are rejected.
+
 ### 3. Pretokenize to .bin format (streaming)
 
 Convert text to memory-mappable binary format:
@@ -64,6 +74,9 @@ python src/pretokenize.py file ./data/eval.txt \
 ```
 
 This creates `train.bin` and `eval.bin` files that can be memory-mapped during training.
+Custom-tokenizer `.bin` and `.pt` outputs also have a `.tokenizer.json` identity file
+(for example, `train.bin.tokenizer.json`); keep it beside the data. Training requires the
+matching tokenizer even with `--use_pretokenized`, and rejects missing or mismatched identities.
 
 To inspect a .bin file:
 
@@ -88,6 +101,10 @@ python src/train_gpt.py \
 ```
 
 ### 5. Generate text
+
+New custom-tokenizer checkpoints contain weights and tokenizer identity. Generation rejects old
+bare state dictionaries and checkpoints from a different tokenizer. Use a freshly trained checkpoint
+with the same tokenizer directory that produced its training data.
 
 ```bash
 python src/generate.py \

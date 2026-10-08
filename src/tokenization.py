@@ -73,6 +73,7 @@ def train_tokenizer(
     # Use streaming training with bounded input
     text_iterator = stream_text_file(train_file_path, max_bytes=max_bytes, max_lines=max_lines)
     tokenizer.train_streaming(text_iterator)
+    print(f"Actual vocabulary size (use for --tgt_vocab_size): {tokenizer.vocab_size}")
 
     # Determine save path
     if output_dir:
