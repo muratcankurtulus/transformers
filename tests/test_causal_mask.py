@@ -9,7 +9,7 @@ from gpt import GPT
 from transformer import Transformer
 
 
-def reference_attention(self, query, key, value, mask=None):
+def reference_attention(self, query, key, value, mask=None, is_causal=False):
     """Use PyTorch's causal kernel as an independent reference for decoder attention."""
     batch_size = query.size(0)
     q = self.q_linear(query).view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
@@ -19,7 +19,7 @@ def reference_attention(self, query, key, value, mask=None):
         q, k = self.rope(q), self.rope(k)
     # These model forwards mask only decoder self-attention. Use is_causal rather
     # than copying the model's mask so the reference independently checks causality.
-    output = F.scaled_dot_product_attention(q, k, v, is_causal=mask is not None, dropout_p=0.0)
+    output = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal or mask is not None, dropout_p=0.0)
     output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
     return self.out_linear(output)
 
