@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "in this project we will implement transformers from scratch"
 authors = [{ name = "Maskedpirate", email = "muratcan.kurtulus@gmail.com" }]
 #dependencies = ["torch==2.4.1", "pydantic", "joblib", "regex", "tqdm", "flash-attn"]
-dependencies = ["torch", "pydantic", "joblib", "regex", "tqdm"]
+dependencies = ["torch", "numpy", "pydantic", "joblib", "regex", "tqdm", "tiktoken"]
+
+[project.optional-dependencies]
+data = ["datasets==3.2.0", "huggingface-hub==0.27.1"]
 
 [tool.black]
 line-length = 120

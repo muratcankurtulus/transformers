@@ -46,7 +46,7 @@ class RotaryPositionalEncoding(nn.Module):
 
     def _update_cos_sin_cache(self, seq_len):
         """Update cached position embeddings"""
-        positions = torch.arange(seq_len).float()
+        positions = torch.arange(seq_len, device=self.inv_freq.device).float()
         freqs = torch.einsum("i,j->ij", positions, self.inv_freq)
         # [seq_len, dim/2]
 
@@ -73,20 +73,20 @@ class RotaryPositionalEncoding(nn.Module):
         cos = self.cos_cached[:seq_len, :]  # [seq_len, dim/2]
         sin = self.sin_cached[:seq_len, :]  # [seq_len, dim/2]
 
-        # Reshape x to separate out last dimension pairs
-        x_2 = x.view(*reshape_shape)
-        x_2_complex = torch.view_as_complex(x_2)
+        # Real-valued pairs preserve the autocast dtype, including FP16 on Turing GPUs.
+        x_2 = x.reshape(*reshape_shape)
+        cos = cos.to(dtype=x.dtype)
+        sin = sin.to(dtype=x.dtype)
 
-        # Get rotation vectors
         if len(x.shape) == 4:
-            cos = cos.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim/2]
-            sin = sin.unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, dim/2]
+            cos = cos.unsqueeze(0).unsqueeze(0)
+            sin = sin.unsqueeze(0).unsqueeze(0)
         else:
-            cos = cos.unsqueeze(0)  # [1, seq_len, dim/2]
-            sin = sin.unsqueeze(0)  # [1, seq_len, dim/2]
+            cos = cos.unsqueeze(0)
+            sin = sin.unsqueeze(0)
 
-        rotation = torch.view_as_complex(torch.stack([cos, sin], dim=-1))
-        return torch.view_as_real(x_2_complex * rotation).flatten(-2)
+        even, odd = x_2.unbind(-1)
+        return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
 
 class PositionalEncoding(nn.Module):
@@ -156,7 +156,7 @@ class MultiHeadAttention(nn.Module):
         self.v_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.out_linear = nn.Linear(embed_dim, embed_dim)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, is_causal=False):
         """Attend to keys/values using an optional boolean blocked-position mask.
 
         True entries are excluded from attention. The mask must broadcast to
@@ -182,13 +182,16 @@ class MultiHeadAttention(nn.Module):
             Q = self.rope(Q)
             K = self.rope(K)
 
-        # Scaled dot-product attention
-        scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.head_dim)  # (batch_size, n_heads, seq_len, seq_len)
-        if mask is not None:
-            scores.masked_fill_(mask, float("-inf"))  # Apply the mask
-        attn_weights = F.softmax(scores, dim=-1)  # (batch_size, n_heads, seq_len, seq_len)
-        attn_weights = self.do_0(attn_weights)
-        attn_output = attn_weights @ V
+        # This API uses True for blocked positions; PyTorch SDPA uses True for allowed positions.
+        allowed_mask = None if mask is None else ~mask
+        attn_output = F.scaled_dot_product_attention(
+            Q,
+            K,
+            V,
+            attn_mask=allowed_mask,
+            dropout_p=self.do_0.p if self.training else 0.0,
+            is_causal=is_causal,
+        )
         # Concatenate heads and put through final linear layer
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
         output = self.do_1(self.out_linear(attn_output))
@@ -223,7 +226,7 @@ class GPTDecoderBlock(nn.Module):
         )
 
     def forward(self, x, mask):
-        att = self.attention(x, x, x, mask)
+        att = self.attention(x, x, x, mask, is_causal=mask is None)
         add_and_norm = self.norm_0(att + x)
         ffn_out = self.ffn(add_and_norm)
         out = self.norm_1(ffn_out + add_and_norm)
