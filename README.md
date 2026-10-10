@@ -26,6 +26,10 @@ This project implements GPT and Transformer models from scratch using PyTorch, i
 
 ## Quick Start (Recommended Pipeline)
 
+For an RTX 2070 Super (8 GB) and a 1–2 day training budget, follow the complete
+[FineWeb-Edu preparation, benchmark, training, resume, and inference workflow](TRAINING_2070_SUPER.md).
+It uses `src/train_budget.py` for packed blocks and FP16 rather than overlapping training windows.
+
 The recommended workflow for training on your own data:
 
 ### 1. Prepare your corpus

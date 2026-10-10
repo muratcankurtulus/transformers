@@ -52,10 +52,19 @@ class GPT(nn.Module):
             torch.Tensor: Target mask tensor.
         """
         _, seq_len = tgt.shape
-        tgt_mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
-        return tgt_mask.to("cuda")
+        return torch.triu(torch.ones(seq_len, seq_len, device=tgt.device, dtype=torch.bool), diagonal=1)
 
-    def generate(self, input_ids: Union[List[int], torch.Tensor], max_length: int) -> torch.Tensor:
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: Union[List[int], torch.Tensor],
+        max_length: int,
+        temperature: float = 0.0,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        context_length: int = 256,
+        forbidden_token_ids: List[int] | None = None,
+    ) -> torch.Tensor:
         """
         Generate a sequence of tokens.
 
@@ -66,21 +75,43 @@ class GPT(nn.Module):
         Returns:
             torch.Tensor: Generated sequence of token IDs.
         """
+        if temperature < 0 or top_k < 0 or not 0 < top_p <= 1 or context_length < 1:
+            raise ValueError("Invalid sampling settings")
         self.eval()
+        device = next(self.parameters()).device
         if isinstance(input_ids, list):
-            input_ids = torch.tensor(input_ids).unsqueeze(0).to("cuda")
+            input_ids = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
         else:
-            input_ids = input_ids.to("cuda")
-
-        generated = input_ids.clone().to("cuda")
-        with torch.no_grad():
-            for _ in range(max_length):
-                outputs = self(generated, self.make_tgt_mask(generated))
-                next_token = outputs[:, -1, :].argmax(dim=-1, keepdim=True)
-                generated = torch.cat((generated, next_token), dim=1)
+            input_ids = input_ids.to(device)
+            if input_ids.ndim == 1:
+                input_ids = input_ids.unsqueeze(0)
+        if input_ids.ndim != 2 or input_ids.size(1) == 0:
+            raise ValueError("Generation requires a nonempty prompt")
+        generated = input_ids.clone()
+        for _ in range(max_length):
+            context = generated[:, -context_length:]
+            logits = self(context)[:, -1, :].float()
+            if forbidden_token_ids:
+                logits[:, forbidden_token_ids] = float("-inf")
+            if temperature == 0:
+                next_token = logits.argmax(dim=-1, keepdim=True)
+            else:
+                logits /= temperature
+                if top_k:
+                    threshold = logits.topk(min(top_k, logits.size(-1))).values[:, -1:]
+                    logits = logits.masked_fill(logits < threshold, float("-inf"))
+                if top_p < 1:
+                    sorted_logits, sorted_indices = logits.sort(descending=True)
+                    remove = sorted_logits.softmax(-1).cumsum(-1) > top_p
+                    remove[:, 1:] = remove[:, :-1].clone()
+                    remove[:, 0] = False
+                    remove = torch.zeros_like(remove).scatter(1, sorted_indices, remove)
+                    logits = logits.masked_fill(remove, float("-inf"))
+                next_token = torch.multinomial(logits.softmax(-1), num_samples=1)
+            generated = torch.cat((generated, next_token), dim=1)
         return generated
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """
         Forward pass of the GPT model.
 
