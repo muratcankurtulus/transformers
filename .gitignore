@@ -1,19 +1,54 @@
-__pycache__
+# Python environments, bytecode, and tool caches
+__pycache__/
+*.py[cod]
 env/
-runs/
+venv/
+.venv/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging and coverage output
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local development and scratch files
+.worktrees/
+.cursor/
+.DS_Store
+/AGENTS.md
+/*-explainer.html
 cpp/
+.ipynb_checkpoints/
+*.ipynb
+
+# Local environment settings; keep shareable templates trackable
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Training data, tokenizer artifacts, and experiment output
+/data/
+/toy_data/
+/artifacts/
+/runs/
+/checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.bin.tokenizer.json
+*.pt.tokenizer.json
+
+# Common Crawl downloads and prepared corpora
 /data_prep/*.gz
 /data_prep/*.txt
 /data_prep/*.paths
 /data_prep/*.ftz
-*.pth
-.ipynb_checkpoints
-*.ipynb
-*.egg-info
-build/
-
-
-	.cursor/
-	artifacts/
-	data_prep/*.bin
-	data_prep/wet/
+/data_prep/wet/

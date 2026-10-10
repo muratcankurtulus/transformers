@@ -1,12 +1,7 @@
-import warnings
-
 import torch
 import torch.nn as nn
 
 from blocks import TransformerDecoder, TransformerEncoder
-
-warnings.simplefilter("ignore")
-print(torch.cuda.get_device_name(0))
 
 
 class Transformer(nn.Module):
@@ -16,10 +11,15 @@ class Transformer(nn.Module):
         self.encoder = TransformerEncoder(seq_len, src_vocab_size, embed_dim, num_layers, expansion_factor, n_heads)
         self.decoder = TransformerDecoder(tgt_vocab_size, embed_dim, seq_len, num_layers, expansion_factor, n_heads)
 
-    def make_tgt_mask(self, tgt):
+    def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
+        """Return a boolean (batch, 1, length, length) causal mask on the target device.
+
+        True blocks future positions; the diagonal and past positions remain visible.
+        Padding is not included in this mask.
+        """
         bs, tgt_len = tgt.shape
-        tgt_mask = torch.triu(torch.ones(tgt_len, tgt_len)).expand(bs, 1, tgt_len, tgt_len).to("cuda")
-        return tgt_mask
+        tgt_mask = torch.triu(torch.ones(tgt_len, tgt_len, dtype=torch.bool, device=tgt.device), diagonal=1)
+        return tgt_mask.expand(bs, 1, tgt_len, tgt_len)
 
     def generate(self, src, tgt):
         tgt_mask = self.make_tgt_mask(tgt)

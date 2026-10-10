@@ -157,6 +157,14 @@ class MultiHeadAttention(nn.Module):
         self.out_linear = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, query, key, value, mask=None):
+        """Attend to keys/values using an optional boolean blocked-position mask.
+
+        True entries are excluded from attention. The mask must broadcast to
+        (batch, n_heads, query_length, key_length); causal and padding masks are
+        constructed separately by callers.
+        """
+        if mask is not None and mask.dtype != torch.bool:
+            raise TypeError("Attention mask must be boolean, with True marking blocked positions")
         batch_size = query.size(0)
 
         # Linear projections
