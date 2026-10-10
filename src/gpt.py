@@ -43,16 +43,18 @@ class GPT(nn.Module):
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """
-        Create a target mask for the decoder.
+        Create a causal mask on the target device; True blocks a future position.
+
+        The diagonal and past positions remain visible. This mask does not mask padding.
 
         Args:
             tgt (torch.Tensor): Target tensor.
 
         Returns:
-            torch.Tensor: Target mask tensor.
+            torch.Tensor: Boolean mask of shape (seq_len, seq_len), shared by all batches and heads.
         """
         _, seq_len = tgt.shape
-        return torch.triu(torch.ones(seq_len, seq_len, device=tgt.device, dtype=torch.bool), diagonal=1)
+        return torch.triu(torch.ones(seq_len, seq_len, dtype=torch.bool, device=tgt.device), diagonal=1)
 
     @torch.no_grad()
     def generate(
