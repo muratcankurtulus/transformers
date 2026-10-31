@@ -64,9 +64,11 @@ class RotaryPositionalEncoding(nn.Module):
         return positions.to(torch.float32).unsqueeze(-1) * inv_freq
 
     def _build_cache(self, length, device):
-        angles = self._angles(torch.arange(length, device=device))
-        self.cos_cached = torch.cos(angles)
-        self.sin_cached = torch.sin(angles)
+        # A cache first built under inference_mode would otherwise break later training forwards.
+        with torch.inference_mode(False):
+            angles = self._angles(torch.arange(length, device=device))
+            self.cos_cached = torch.cos(angles)
+            self.sin_cached = torch.sin(angles)
 
     def _cached_cos_sin(self, start, length, device):
         end = start + length

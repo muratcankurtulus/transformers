@@ -124,6 +124,15 @@ class RopeValueTests(unittest.TestCase):
         out3 = rope(x3, position_ids=rows)
         torch.testing.assert_close(out3[1], rope(x3[1:], offset=6)[0], atol=0, rtol=0)
 
+    def test_cache_grown_under_inference_mode_still_supports_training(self):
+        rope = RotaryPositionalEncoding(8, 4)
+        with torch.inference_mode():
+            rope(torch.randn(1, 8, 8))  # grows the cache
+        self.assertFalse(rope.cos_cached.is_inference())
+        x = torch.randn(1, 8, 8, requires_grad=True)
+        rope(x).square().sum().backward()
+        self.assertTrue(torch.isfinite(x.grad).all())
+
     def test_module_half_cast_does_not_degrade_cached_angles(self):
         x = torch.randn(1, 2, 40, 8).half()
         expected = RotaryPositionalEncoding(8, 64)(x)
