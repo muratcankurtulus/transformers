@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from blocks import POS_ENCODING_TYPES
 from gpt import GPT
 from tokenizer import Tokenizer
 
@@ -114,6 +115,8 @@ def train(args):
         "expansion_factor": 4,
         "n_heads": args.n_heads,
         "dropout_rate": args.dropout_rate,
+        "pos_encoding_type": args.pos_encoding_type,
+        "max_seq_len": args.seq_len,
     }
     training_config = {
         "seq_len": args.seq_len,
@@ -133,7 +136,10 @@ def train(args):
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu", weights_only=True)
         tokenizer.validate_metadata(saved.get("tokenizer"), str(args.resume))
-        if saved["model_config"] != model_config or saved["training_config"] != training_config:
+        # Checkpoints from before TFS-6 omit these keys; those runs were rotary, and RoPE's cache length
+        # does not affect weights or outputs.
+        saved_model_config = {"pos_encoding_type": "rotary", "max_seq_len": args.seq_len, **saved["model_config"]}
+        if saved_model_config != model_config or saved["training_config"] != training_config:
             raise ValueError("Resume requires the same model, batch, precision, optimizer, seed, and context settings")
         if saved["data"] != {"train": train_data.identity, "eval": eval_data.identity}:
             raise ValueError("Resume corpus differs from checkpoint corpus")
@@ -268,6 +274,7 @@ def main():
     parser.add_argument("--n_heads", type=int, default=6)
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--dropout_rate", type=float, default=0.1)
+    parser.add_argument("--pos_encoding_type", choices=POS_ENCODING_TYPES, default="rotary")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation", type=int, default=4)
     parser.add_argument("--precision", choices=("fp16", "fp32"), default="fp16")
@@ -299,8 +306,12 @@ def main():
         parser.error("Invalid training settings; sizes/intervals must be positive and dropout must be in [0, 1)")
     if args.max_steps is not None and args.max_steps <= 0:
         parser.error("--max_steps must be positive")
-    if args.embed_dim % args.n_heads or (args.embed_dim // args.n_heads) % 2:
+    if args.embed_dim % args.n_heads:
+        parser.error("--embed_dim must be divisible by --n_heads")
+    if args.pos_encoding_type == "rotary" and (args.embed_dim // args.n_heads) % 2:
         parser.error("Head dimension must be an even integer for RoPE")
+    if args.pos_encoding_type == "sinusoidal" and args.embed_dim % 2:
+        parser.error("--embed_dim must be even for sinusoidal positions")
     train(args)
 
 

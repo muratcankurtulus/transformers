@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from torch.optim.lr_scheduler import LambdaLR, OneCycleLR, ReduceLROnPlateau
 from tqdm import tqdm
 
+from blocks import POS_ENCODING_TYPES
 from gpt import GPT
 from tokenizer import Tokenizer
 
@@ -28,6 +29,7 @@ class ModelConfig(BaseModel):
     expansion_factor: int = 4
     n_heads: int = 6
     dropout_rate: float = 0.2
+    pos_encoding_type: str = "rotary"
 
 
 class DatasetConfig(BaseModel):
@@ -266,6 +268,7 @@ def main(
     n_heads,
     batch_size,
     shuffle,
+    pos_encoding_type="rotary",
 ):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
@@ -286,11 +289,13 @@ def main(
         expansion_factor=expansion_factor,
         n_heads=n_heads,
         dropout_rate=dropout_rate,
+        pos_encoding_type=pos_encoding_type,
     )
     train_dataset = Dataset(train_data_path, model_config.seq_len, tokenizer, tokenizer_type)
     eval_dataset = Dataset(eval_data_path, model_config.seq_len, tokenizer, tokenizer_type)
-    # Exclude seq_len from model config - it's only used for Dataset
+    # GPT names the context bound max_seq_len; seq_len also sizes the Dataset windows.
     gpt_params = {k: v for k, v in model_config.model_dump().items() if k != "seq_len"}
+    gpt_params["max_seq_len"] = model_config.seq_len
     model = GPT(**gpt_params).to("cuda")
     print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
     # Disable compilation as it's causing segmentation faults
@@ -529,6 +534,12 @@ if __name__ == "__main__":
         default=model_config.dropout_rate,
         help=f"Dropout rate for the model (default: {model_config.dropout_rate})",
     )
+    parser.add_argument(
+        "--pos_encoding_type",
+        choices=POS_ENCODING_TYPES,
+        default=model_config.pos_encoding_type,
+        help=f"Positional encoding (default: {model_config.pos_encoding_type})",
+    )
 
     args = parser.parse_args()
 
@@ -552,4 +563,5 @@ if __name__ == "__main__":
         args.n_heads,
         args.batch_size,
         args.shuffle,
+        pos_encoding_type=args.pos_encoding_type,
     )

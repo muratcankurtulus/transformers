@@ -87,6 +87,7 @@ class PackedTrainingTests(unittest.TestCase):
             num_layers=1,
             n_heads=2,
             dropout_rate=0.0,
+            pos_encoding_type="rotary",
             batch_size=2,
             gradient_accumulation=2,
             learning_rate=1e-3,
@@ -124,6 +125,35 @@ class PackedTrainingTests(unittest.TestCase):
         )
         write_tokens(self.eval_path, list(range(90, 190)), self.tokenizer)
         with self.assertRaisesRegex(ValueError, "corpus differs"):
+            train(args)
+
+    def test_positional_mode_is_saved_and_reloaded_for_generation(self):
+        args = self.arguments()
+        args.pos_encoding_type = "sinusoidal"
+        with redirect_stdout(io.StringIO()):
+            train(args)
+        saved = torch.load(args.output_dir / "last.pth", weights_only=True)
+        self.assertEqual(saved["model_config"]["pos_encoding_type"], "sinusoidal")
+        self.assertEqual(saved["model_config"]["max_seq_len"], 8)
+        model = GPT(**saved["model_config"])
+        model.load_state_dict(saved["model_state_dict"])
+        self.assertIsNotNone(model.decoder.pos_encoding)
+
+    def test_checkpoints_from_before_positional_config_still_resume(self):
+        args = self.arguments()
+        with redirect_stdout(io.StringIO()):
+            train(args)
+        last = args.output_dir / "last.pth"
+        saved = torch.load(last, weights_only=True)
+        for name in ("pos_encoding_type", "max_seq_len"):
+            del saved["model_config"][name]
+        torch.save(saved, last)
+        args.resume, args.max_steps = last, 2
+        with redirect_stdout(io.StringIO()):
+            train(args)
+        self.assertEqual(torch.load(last, weights_only=True)["step"], 2)
+        args.pos_encoding_type = "sinusoidal"
+        with self.assertRaisesRegex(ValueError, "same model"):
             train(args)
 
 

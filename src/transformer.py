@@ -5,11 +5,26 @@ from blocks import TransformerDecoder, TransformerEncoder
 
 
 class Transformer(nn.Module):
-    def __init__(self, embed_dim, src_vocab_size, tgt_vocab_size, seq_len, num_layers=2, expansion_factor=4, n_heads=8):
+    def __init__(
+        self,
+        embed_dim,
+        src_vocab_size,
+        tgt_vocab_size,
+        seq_len,
+        num_layers=2,
+        expansion_factor=4,
+        n_heads=8,
+        pos_encoding_type="rotary",
+        dropout_rate=0.2,
+    ):
         super().__init__()
         self.tgt_vocab_size = tgt_vocab_size
-        self.encoder = TransformerEncoder(seq_len, src_vocab_size, embed_dim, num_layers, expansion_factor, n_heads)
-        self.decoder = TransformerDecoder(tgt_vocab_size, embed_dim, seq_len, num_layers, expansion_factor, n_heads)
+        self.encoder = TransformerEncoder(
+            seq_len, src_vocab_size, embed_dim, num_layers, expansion_factor, n_heads, pos_encoding_type, dropout_rate
+        )
+        self.decoder = TransformerDecoder(
+            tgt_vocab_size, embed_dim, seq_len, num_layers, expansion_factor, n_heads, dropout_rate, pos_encoding_type
+        )
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:
         """Return a boolean (batch, 1, length, length) causal mask on the target device.

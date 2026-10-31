@@ -33,7 +33,7 @@ class RopeConstructionTests(unittest.TestCase):
 
     def test_attention_rejects_odd_rotary_head_dimension(self):
         with self.assertRaises(ValueError):
-            MultiHeadAttention(embed_dim=6, n_heads=2, pos_encoding_type="rotary")
+            MultiHeadAttention(embed_dim=6, n_heads=2, rotary=True)
 
     def test_rejects_invalid_inputs(self):
         rope = RotaryPositionalEncoding(8, 16)
@@ -184,7 +184,7 @@ class RopeDeviceTests(unittest.TestCase):
         for dtype in dtypes:
             with self.subTest(dtype=dtype):
                 torch.manual_seed(0)
-                attention = MultiHeadAttention(32, 4, "rotary", max_seq_len=8, dropout_rate=0.0).cuda()
+                attention = MultiHeadAttention(32, 4, rotary=True, max_seq_len=8, dropout_rate=0.0).cuda()
                 x = torch.randn(2, 24, 32, device="cuda", requires_grad=True)
                 with torch.autocast("cuda", dtype=dtype):
                     out = attention(x, x, x, is_causal=True)

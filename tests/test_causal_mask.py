@@ -15,7 +15,7 @@ def reference_attention(self, query, key, value, mask=None, is_causal=False):
     q = self.q_linear(query).view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
     k = self.k_linear(key).view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
     v = self.v_linear(value).view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
-    if self.pos_encoding_type == "rotary":
+    if self.rotary:
         q, k = self.rope(q), self.rope(k)
     # These model forwards mask only decoder self-attention. Use is_causal rather
     # than copying the model's mask so the reference independently checks causality.

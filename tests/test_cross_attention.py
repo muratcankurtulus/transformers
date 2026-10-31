@@ -10,7 +10,7 @@ class CrossAttentionTests(unittest.TestCase):
         torch.manual_seed(0)
 
     def test_output_length_follows_queries_with_unequal_source_and_target_lengths(self):
-        block = TransformerEncoderBlock(embed_dim=8, n_heads=2, pos_encoding_type="sinusoidal", dropout_rate=0.0).eval()
+        block = TransformerEncoderBlock(embed_dim=8, n_heads=2, rotary=False, dropout_rate=0.0).eval()
 
         for source_length, target_length in ((5, 3), (3, 5)):
             with self.subTest(source_length=source_length, target_length=target_length):
@@ -24,7 +24,7 @@ class CrossAttentionTests(unittest.TestCase):
 
     def test_reordering_source_keys_and_values_preserves_equal_length_target_outputs(self):
         # Without positional rotation, reordering memory must leave each fixed query's result unchanged.
-        block = TransformerEncoderBlock(embed_dim=8, n_heads=2, pos_encoding_type="sinusoidal", dropout_rate=0.0).eval()
+        block = TransformerEncoderBlock(embed_dim=8, n_heads=2, rotary=False, dropout_rate=0.0).eval()
         source = torch.randn(2, 4, 8)
         target = torch.randn(2, 4, 8)
         reordered_source = source[:, [2, 0, 3, 1], :]

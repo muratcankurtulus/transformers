@@ -181,28 +181,38 @@ class PositionalEncoding(nn.Module):
         return x + self.pos_enc[:, : x.size(1)].to(x.dtype)
 
 
+POS_ENCODING_TYPES = ("rotary", "sinusoidal")
+
+
+def uses_rotary(pos_encoding_type):
+    """Validate a model-level positional mode and return whether self-attention rotates queries and keys."""
+    if pos_encoding_type not in POS_ENCODING_TYPES:
+        raise ValueError(f"pos_encoding_type must be one of {POS_ENCODING_TYPES}, got {pos_encoding_type!r}")
+    return pos_encoding_type == "rotary"
+
+
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads, pos_encoding_type, max_seq_len=512, dropout_rate=0.2):
+    def __init__(self, embed_dim, n_heads, rotary=False, max_seq_len=512, dropout_rate=0.2):
         """
         Parameters:
             embed_dim: dimension of embeddings
             n_heads: number of attention heads
-            pos_encoding_type: type of positional encoding ("sinusoidal" or "rotary")
-            max_seq_len: maximum sequence length
+            rotary: rotate queries and keys with RoPE; only meaningful for self-attention
+            max_seq_len: initial RoPE cache length
             dropout_rate: dropout rate
         """
         super().__init__()
+        if embed_dim % n_heads != 0:
+            raise ValueError("Embedding dimension must be divisible by number of heads")
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
         self.do_0 = nn.Dropout(dropout_rate)
         self.do_1 = nn.Dropout(dropout_rate)
-        self.pos_encoding_type = pos_encoding_type
+        self.rotary = rotary
 
-        if pos_encoding_type == "rotary":
+        if rotary:
             self.rope = RotaryPositionalEncoding(self.head_dim, max_seq_len)
-
-        assert self.head_dim * n_heads == embed_dim, "Embedding dimension must be divisible by number of heads"
 
         self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.k_linear = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -230,8 +240,7 @@ class MultiHeadAttention(nn.Module):
         K = K.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
         V = V.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
 
-        # Apply RoPE if selected
-        if self.pos_encoding_type == "rotary":
+        if self.rotary:
             Q = self.rope(Q)
             K = self.rope(K)
 
@@ -258,7 +267,8 @@ class GPTDecoderBlock(nn.Module):
         embed_dim,
         expansion_factor=4,
         n_heads=8,
-        pos_encoding_type="rotary",
+        rotary=True,
+        max_seq_len=512,
         dropout_rate=0.2,
     ):
         super().__init__()
@@ -266,7 +276,8 @@ class GPTDecoderBlock(nn.Module):
         self.attention = MultiHeadAttention(
             embed_dim,
             n_heads,
-            pos_encoding_type=pos_encoding_type,
+            rotary=rotary,
+            max_seq_len=max_seq_len,
             dropout_rate=dropout_rate,
         )
         self.norm_0 = nn.LayerNorm(embed_dim)
@@ -296,14 +307,18 @@ class GPTDecoder(nn.Module):
         n_heads=8,
         dropout_rate=0.2,
         pos_encoding_type="rotary",
+        max_seq_len=512,
     ):
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
+        self.pos_encoding_type = pos_encoding_type
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
+        self.pos_encoding = None if rotary else PositionalEncoding(max_seq_len, embed_dim)
         self.embed_dropout = nn.Dropout(dropout_rate)
         self.layers = nn.ModuleList(
             [
-                GPTDecoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type, dropout_rate)
+                GPTDecoderBlock(embed_dim, expansion_factor, n_heads, rotary, max_seq_len, dropout_rate)
                 for _ in range(num_layers)
             ]
         )
@@ -312,6 +327,8 @@ class GPTDecoder(nn.Module):
 
     def forward(self, x, mask):
         x = self.word_embedding(x)
+        if self.pos_encoding is not None:
+            x = self.pos_encoding(x)
         x = self.embed_dropout(x)
 
         for layer in self.layers:
@@ -323,17 +340,20 @@ class GPTDecoder(nn.Module):
 
 
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, pos_encoding_type="rotary", dropout_rate=0.2):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, rotary=True, max_seq_len=512, dropout_rate=0.2):
         """
         Parameters:
             embed_dim: dimension of the embedding vector
             expansion_factor: factor which determines the dimension of the linear layer
             n_heads: number of attention heads.
+            rotary: rotate queries and keys; must be False when used for cross-attention
+            max_seq_len: initial RoPE cache length
+            dropout_rate: dropout rate for attention and residual paths
         """
         super().__init__()
 
         self.attention = MultiHeadAttention(
-            embed_dim, n_heads, pos_encoding_type=pos_encoding_type, dropout_rate=dropout_rate
+            embed_dim, n_heads, rotary=rotary, max_seq_len=max_seq_len, dropout_rate=dropout_rate
         )
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -360,7 +380,15 @@ class TransformerEncoderBlock(nn.Module):
 
 class TransformerEncoder(nn.Module):
     def __init__(
-        self, seq_len, vocab_size, embed_dim, num_layers=2, expansion_factor=4, n_heads=8, pos_encoding_type="rotary"
+        self,
+        seq_len,
+        vocab_size,
+        embed_dim,
+        num_layers=2,
+        expansion_factor=4,
+        n_heads=8,
+        pos_encoding_type="rotary",
+        dropout_rate=0.2,
     ):
         """
         Parameters:
@@ -370,23 +398,27 @@ class TransformerEncoder(nn.Module):
             num_layers: number of encoder layers
             expansion_factor: factor which determines the linear layers in feed forward step
             n_heads: number of heads for multi head attention
+            pos_encoding_type: "rotary" (rotate self-attention) or "sinusoidal" (add an absolute table)
+            dropout_rate: dropout rate for every layer
         Returns:
             out: output of the encoder.
         """
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
 
         self.embedding_layer = Embedding(vocab_size, embed_dim)
-        self.pos_encoding = PositionalEncoding(seq_len, embed_dim)
+        self.pos_encoding = None if rotary else PositionalEncoding(seq_len, embed_dim)
         self.layers = nn.ModuleList(
             [
-                TransformerEncoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type)
-                for i in range(num_layers)
+                TransformerEncoderBlock(embed_dim, expansion_factor, n_heads, rotary, seq_len, dropout_rate)
+                for _ in range(num_layers)
             ]
         )
 
     def forward(self, x):
-        embed_out = self.embedding_layer(x)
-        out = self.pos_encoding(embed_out)
+        out = self.embedding_layer(x)
+        if self.pos_encoding is not None:
+            out = self.pos_encoding(out)
 
         for layer in self.layers:
             out = layer(out, out, out)
@@ -395,15 +427,18 @@ class TransformerEncoder(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, pos_encoding_type="rotary", dropout_rate=0.2):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, rotary=True, max_seq_len=512, dropout_rate=0.2):
         super().__init__()
 
         self.attention = MultiHeadAttention(
-            embed_dim, n_heads, pos_encoding_type=pos_encoding_type, dropout_rate=dropout_rate
+            embed_dim, n_heads, rotary=rotary, max_seq_len=max_seq_len, dropout_rate=dropout_rate
         )
         self.norm = nn.LayerNorm(embed_dim)
         self.do = nn.Dropout(dropout_rate)
-        self.encoder_block = TransformerEncoderBlock(embed_dim, expansion_factor, n_heads)
+        # Cross-attention: decoder queries and encoder keys come from different sequences, so no RoPE.
+        self.encoder_block = TransformerEncoderBlock(
+            embed_dim, expansion_factor, n_heads, False, dropout_rate=dropout_rate
+        )
 
     def forward(self, key, x, value, mask):
         att = self.attention(x, x, x, mask)
@@ -425,13 +460,14 @@ class TransformerDecoder(nn.Module):
         pos_encoding_type="rotary",
     ):
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
-        self.pos_enc = PositionalEncoding(seq_len, embed_dim)
+        self.pos_enc = None if rotary else PositionalEncoding(seq_len, embed_dim)
 
         self.layers = nn.ModuleList(
             [
-                TransformerDecoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type)
+                TransformerDecoderBlock(embed_dim, expansion_factor, n_heads, rotary, seq_len, dropout_rate)
                 for _ in range(num_layers)
             ]
         )
@@ -441,7 +477,8 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, x, enc_out, mask):
         x = self.word_embedding(x)
-        x = self.pos_enc(x)
+        if self.pos_enc is not None:
+            x = self.pos_enc(x)
         x = self.do(x)
 
         for layer in self.layers:
