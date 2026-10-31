@@ -1,8 +1,12 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def drop_legacy_buffers(state_dict, prefix, names):
+    """Discard derived buffers that checkpoints saved before they became non-persistent still carry."""
+    for name in names:
+        state_dict.pop(prefix + name, None)
 
 
 class Embedding(nn.Module):
@@ -82,9 +86,7 @@ class RotaryPositionalEncoding(nn.Module):
         return self.cos_cached[start:end], self.sin_cached[start:end]
 
     def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        # Checkpoints saved before the caches became non-persistent still carry them.
-        for name in self.LEGACY_BUFFERS:
-            state_dict.pop(prefix + name, None)
+        drop_legacy_buffers(state_dict, prefix, self.LEGACY_BUFFERS)
         super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(self, x, position_ids=None, offset=0):
@@ -133,42 +135,50 @@ class RotaryPositionalEncoding(nn.Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, max_seq_len, embed_dim):
+    """Additive sinusoidal encoding from "Attention Is All You Need" (arXiv:1706.03762, section 3.5).
+
+    PE[pos, 2i] = sin(pos / base^(2i/d)) and PE[pos, 2i+1] = cos(pos / base^(2i/d)): each sine/cosine
+    pair shares one frequency. The table is derived, so it is a non-persistent buffer.
+    """
+
+    LEGACY_BUFFERS = ("pos_enc",)
+
+    def __init__(self, max_seq_len, embed_dim, base=10000.0):
         """
-        Class to calculate Positional Encoding
         Parameters:
-            max_seq_len: maximum sequence length to expect
-            emded_dim: dimension of word embedding
+            max_seq_len: longest sequence accepted; longer inputs raise ValueError
+            embed_dim: dimension of word embedding; must be a positive even integer
+            base: frequency base of the encoding
         """
         super().__init__()
+        if embed_dim <= 0 or embed_dim % 2 != 0:
+            raise ValueError(f"Sinusoidal embed_dim must be a positive even integer, got {embed_dim}")
+        if max_seq_len <= 0:
+            raise ValueError(f"Sinusoidal max_seq_len must be positive, got {max_seq_len}")
         self.embed_dim = embed_dim
+        self.max_seq_len = max_seq_len
 
-        # create a null matrix
-        pos_enc = torch.zeros(max_seq_len, self.embed_dim)
+        inv_freq = 1.0 / (base ** (torch.arange(0, embed_dim, 2, dtype=torch.float32) / embed_dim))
+        angles = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(1) * inv_freq
+        pos_enc = torch.zeros(max_seq_len, embed_dim)
+        pos_enc[:, 0::2] = torch.sin(angles)
+        pos_enc[:, 1::2] = torch.cos(angles)
+        self.register_buffer("pos_enc", pos_enc.unsqueeze(0), persistent=False)
 
-        # apply the sine and cosine functions from 'attention is all you need' paper
-        for pos in range(max_seq_len):
-            for i in range(0, self.embed_dim, 2):
-                pos_enc[pos, i] = math.sin(pos / 10000 ** ((2 * i) / self.embed_dim))
-                pos_enc[pos, i + 1] = math.cos(pos / 10000 ** ((2 * (i + 1)) / self.embed_dim))
-
-        pos_enc = pos_enc.unsqueeze(0)
-
-        # register buffer in Pytorch ->
-        # If you have parameters in your model, which should be saved and restored in the state_dict,
-        # but not trained by the optimizer, you should register them as buffers.
-        self.register_buffer("pos_enc", pos_enc)
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        drop_legacy_buffers(state_dict, prefix, self.LEGACY_BUFFERS)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(self, x):
         """
         Args:
-            x: input vector
+            x: embeddings [batch, seq_len, embed_dim]
         Returns:
-            x: output
+            x plus the encoding of positions 0..seq_len-1, in x's dtype
         """
-
-        x = x + self.pos_enc[:, : x.size(1), :]
-        return x
+        if x.size(1) > self.max_seq_len:
+            raise ValueError(f"Sequence length {x.size(1)} exceeds sinusoidal max_seq_len {self.max_seq_len}")
+        return x + self.pos_enc[:, : x.size(1)].to(x.dtype)
 
 
 class MultiHeadAttention(nn.Module):
