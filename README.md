@@ -125,6 +125,17 @@ python src/generate.py \
     --length 200
 ```
 
+### Positional encoding and devices
+
+`train_gpt.py`, `train_budget.py`, and `generate.py` accept:
+
+- `--pos_encoding_type rotary|sinusoidal` (default `rotary`). Rotary rotates self-attention queries and keys only;
+  sinusoidal adds the absolute table to the embeddings and never rotates. Cross-attention is never rotated.
+  `train_budget.py` saves the choice in the checkpoint config, so `generate.py` restores it automatically;
+  older checkpoints without it load as rotary.
+- `--device cpu|cuda|cuda:N` (default `cuda`). Bare `cuda` uses `LOCAL_RANK` when launched by `torchrun`, otherwise
+  GPU 0. CUDA is only queried when a device is selected, never at import time.
+
 ## Common Crawl Pipeline
 
 For training on web-scale data from Common Crawl:
