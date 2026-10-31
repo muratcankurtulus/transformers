@@ -14,8 +14,9 @@ class GPT(nn.Module):
         num_layers: int = 2,
         expansion_factor: int = 4,
         n_heads: int = 8,
-        pos_encoding_type="rotary",
+        pos_encoding_type: str = "rotary",
         dropout_rate: float = 0.2,
+        max_seq_len: int = 512,
     ):
         """
         Initialize the GPT model.
@@ -26,8 +27,10 @@ class GPT(nn.Module):
             num_layers (int, optional): Number of decoder layers. Defaults to 2.
             expansion_factor (int, optional): Expansion factor for feed-forward layers. Defaults to 4.
             n_heads (int, optional): Number of attention heads. Defaults to 8.
-            pos_encoding_type (str, optional): Type of positional encoding. Defaults to "rotary".
+            pos_encoding_type (str, optional): "rotary" rotates queries/keys; "sinusoidal" adds an
+                absolute table to the embeddings. Defaults to "rotary".
             dropout_rate (float, optional): Dropout rate for regularization. Defaults to 0.2.
+            max_seq_len (int, optional): Sinusoidal table length and initial RoPE cache length. Defaults to 512.
         """
         super().__init__()
 
@@ -39,6 +42,7 @@ class GPT(nn.Module):
             n_heads,
             dropout_rate=dropout_rate,
             pos_encoding_type=pos_encoding_type,
+            max_seq_len=max_seq_len,
         )
 
     def make_tgt_mask(self, tgt: torch.Tensor) -> torch.Tensor:

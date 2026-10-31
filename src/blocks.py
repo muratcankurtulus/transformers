@@ -1,8 +1,12 @@
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def drop_legacy_buffers(state_dict, prefix, names):
+    """Discard derived buffers that checkpoints saved before they became non-persistent still carry."""
+    for name in names:
+        state_dict.pop(prefix + name, None)
 
 
 class Embedding(nn.Module):
@@ -26,130 +30,189 @@ class Embedding(nn.Module):
 
 
 class RotaryPositionalEncoding(nn.Module):
-    def __init__(self, dim, max_seq_len):
+    """Rotary Position Embedding (RoFormer, arXiv:2104.09864) over adjacent feature pairs.
+
+    Dtype policy: rotation angles and the cos/sin caches are always FP32. They are cast to the
+    input dtype only for the final rotation, so the output dtype equals the input dtype (FP32,
+    FP16 or BF16) and autocast-produced half-precision Q/K stay half precision.
+
+    The caches are non-persistent and rebuilt on demand when a request needs more positions,
+    the input lives on another device, or a module-wide ``.half()``/``.to(dtype)`` downcast them.
+    """
+
+    LEGACY_BUFFERS = ("inv_freq", "cos_cached", "sin_cached")
+
+    def __init__(self, dim, max_seq_len, base=10000.0):
         """
-        Rotary Position Embedding (RoPE) implementation
         Parameters:
-            dim: dimension of embeddings (must be divisible by 2)
-            max_seq_len: maximum sequence length
+            dim: rotary feature dimension; must be a positive even integer
+            max_seq_len: number of positions to precompute; longer requests grow the cache
+            base: frequency base of the rotation angles
         """
         super().__init__()
+        if dim <= 0 or dim % 2 != 0:
+            raise ValueError(f"RoPE dimension must be a positive even integer, got {dim}")
+        if max_seq_len <= 0:
+            raise ValueError(f"RoPE max_seq_len must be positive, got {max_seq_len}")
         self.dim = dim
         self.max_seq_len = max_seq_len
+        self.base = base
+        self.register_buffer("cos_cached", torch.empty(0, dim // 2), persistent=False)
+        self.register_buffer("sin_cached", torch.empty(0, dim // 2), persistent=False)
+        self._build_cache(max_seq_len, torch.device("cpu"))
 
-        # Generate inverse frequency bands for half the dimension (since we apply to pairs)
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
+    def _angles(self, positions):
+        """FP32 rotation angles of shape [*positions.shape, dim/2], on the positions' device."""
+        exponents = torch.arange(0, self.dim, 2, device=positions.device, dtype=torch.float32) / self.dim
+        inv_freq = 1.0 / (self.base**exponents)
+        return positions.to(torch.float32).unsqueeze(-1) * inv_freq
 
-        # Cache position embeddings
-        self._update_cos_sin_cache(max_seq_len)
+    def _build_cache(self, length, device):
+        # A cache first built under inference_mode would otherwise break later training forwards.
+        with torch.inference_mode(False):
+            angles = self._angles(torch.arange(length, device=device))
+            self.cos_cached = torch.cos(angles)
+            self.sin_cached = torch.sin(angles)
 
-    def _update_cos_sin_cache(self, seq_len):
-        """Update cached position embeddings"""
-        positions = torch.arange(seq_len, device=self.inv_freq.device).float()
-        freqs = torch.einsum("i,j->ij", positions, self.inv_freq)
-        # [seq_len, dim/2]
+    def _cached_cos_sin(self, start, length, device):
+        end = start + length
+        cache = self.cos_cached
+        cache_len = cache.size(0)
+        if cache_len < end:
+            # Grow geometrically so token-by-token decoding past the cache does not rebuild every step.
+            self._build_cache(max(end, 2 * cache_len), device)
+        elif cache.device != device or cache.dtype != torch.float32:
+            self._build_cache(cache_len, device)
+        return self.cos_cached[start:end], self.sin_cached[start:end]
 
-        self.register_buffer("cos_cached", torch.cos(freqs))
-        self.register_buffer("sin_cached", torch.sin(freqs))
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        drop_legacy_buffers(state_dict, prefix, self.LEGACY_BUFFERS)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
-    def forward(self, x):
+    def forward(self, x, position_ids=None, offset=0):
         """
-        Apply rotary position embeddings to input tensor
+        Rotate feature pairs of ``x`` by their absolute positions.
+
         Args:
-            x: Input tensor of shape [batch_size, seq_len, dim] or [batch_size, n_heads, seq_len, head_dim]
+            x: floating tensor [batch, seq_len, dim] or [batch, n_heads, seq_len, dim]
+            position_ids: optional integer positions [seq_len] or [batch, seq_len]
+            offset: position of the first token when ``position_ids`` is omitted,
+                e.g. the number of tokens already in a KV cache
+        Returns:
+            tensor of the same shape, dtype and device as ``x``
         """
-        if len(x.shape) == 4:
-            batch_size, n_heads, seq_len, head_dim = x.shape
-            reshape_shape = (batch_size, n_heads, seq_len, head_dim // 2, 2)
+        if x.dim() not in (3, 4):
+            raise ValueError(f"RoPE expects a 3D or 4D tensor, got shape {tuple(x.shape)}")
+        if x.size(-1) != self.dim:
+            raise ValueError(f"RoPE expects last dimension {self.dim}, got {x.size(-1)}")
+        if not x.is_floating_point():
+            raise TypeError(f"RoPE expects a floating tensor, got {x.dtype}")
+        seq_len = x.size(-2)
+
+        if position_ids is None:
+            if offset < 0:
+                raise ValueError(f"RoPE offset must be non-negative, got {offset}")
+            cos, sin = self._cached_cos_sin(offset, seq_len, x.device)  # [seq_len, dim/2]
         else:
-            batch_size, seq_len, dim = x.shape
-            reshape_shape = (batch_size, seq_len, dim // 2, 2)
+            if offset != 0:
+                raise ValueError("Pass either position_ids or offset to RoPE, not both")
+            if position_ids.dtype.is_floating_point or position_ids.dtype.is_complex:
+                raise TypeError(f"RoPE position_ids must be integers, got {position_ids.dtype}")
+            if position_ids.dim() not in (1, 2) or position_ids.size(-1) != seq_len:
+                raise ValueError(
+                    f"RoPE position_ids must have shape [{seq_len}] or [batch, {seq_len}], "
+                    f"got {tuple(position_ids.shape)}"
+                )
+            angles = self._angles(position_ids.to(x.device))
+            cos, sin = torch.cos(angles), torch.sin(angles)  # [(batch,) seq_len, dim/2]
+            if x.dim() == 4 and position_ids.dim() == 2:
+                cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)  # broadcast across heads
 
-        if seq_len > self.max_seq_len:
-            self._update_cos_sin_cache(seq_len)
-            self.max_seq_len = seq_len
-
-        cos = self.cos_cached[:seq_len, :]  # [seq_len, dim/2]
-        sin = self.sin_cached[:seq_len, :]  # [seq_len, dim/2]
-
-        # Real-valued pairs preserve the autocast dtype, including FP16 on Turing GPUs.
-        x_2 = x.reshape(*reshape_shape)
         cos = cos.to(dtype=x.dtype)
         sin = sin.to(dtype=x.dtype)
-
-        if len(x.shape) == 4:
-            cos = cos.unsqueeze(0).unsqueeze(0)
-            sin = sin.unsqueeze(0).unsqueeze(0)
-        else:
-            cos = cos.unsqueeze(0)
-            sin = sin.unsqueeze(0)
-
-        even, odd = x_2.unbind(-1)
+        even, odd = x.reshape(*x.shape[:-1], self.dim // 2, 2).unbind(-1)
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, max_seq_len, embed_dim):
+    """Additive sinusoidal encoding from "Attention Is All You Need" (arXiv:1706.03762, section 3.5).
+
+    PE[pos, 2i] = sin(pos / base^(2i/d)) and PE[pos, 2i+1] = cos(pos / base^(2i/d)): each sine/cosine
+    pair shares one frequency. The table is derived, so it is a non-persistent buffer.
+    """
+
+    LEGACY_BUFFERS = ("pos_enc",)
+
+    def __init__(self, max_seq_len, embed_dim, base=10000.0):
         """
-        Class to calculate Positional Encoding
         Parameters:
-            max_seq_len: maximum sequence length to expect
-            emded_dim: dimension of word embedding
+            max_seq_len: longest sequence accepted; longer inputs raise ValueError
+            embed_dim: dimension of word embedding; must be a positive even integer
+            base: frequency base of the encoding
         """
         super().__init__()
+        if embed_dim <= 0 or embed_dim % 2 != 0:
+            raise ValueError(f"Sinusoidal embed_dim must be a positive even integer, got {embed_dim}")
+        if max_seq_len <= 0:
+            raise ValueError(f"Sinusoidal max_seq_len must be positive, got {max_seq_len}")
         self.embed_dim = embed_dim
+        self.max_seq_len = max_seq_len
 
-        # create a null matrix
-        pos_enc = torch.zeros(max_seq_len, self.embed_dim)
+        inv_freq = 1.0 / (base ** (torch.arange(0, embed_dim, 2, dtype=torch.float32) / embed_dim))
+        angles = torch.arange(max_seq_len, dtype=torch.float32).unsqueeze(1) * inv_freq
+        pos_enc = torch.zeros(max_seq_len, embed_dim)
+        pos_enc[:, 0::2] = torch.sin(angles)
+        pos_enc[:, 1::2] = torch.cos(angles)
+        self.register_buffer("pos_enc", pos_enc.unsqueeze(0), persistent=False)
 
-        # apply the sine and cosine functions from 'attention is all you need' paper
-        for pos in range(max_seq_len):
-            for i in range(0, self.embed_dim, 2):
-                pos_enc[pos, i] = math.sin(pos / 10000 ** ((2 * i) / self.embed_dim))
-                pos_enc[pos, i + 1] = math.cos(pos / 10000 ** ((2 * (i + 1)) / self.embed_dim))
-
-        pos_enc = pos_enc.unsqueeze(0)
-
-        # register buffer in Pytorch ->
-        # If you have parameters in your model, which should be saved and restored in the state_dict,
-        # but not trained by the optimizer, you should register them as buffers.
-        self.register_buffer("pos_enc", pos_enc)
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        drop_legacy_buffers(state_dict, prefix, self.LEGACY_BUFFERS)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(self, x):
         """
         Args:
-            x: input vector
+            x: embeddings [batch, seq_len, embed_dim]
         Returns:
-            x: output
+            x plus the encoding of positions 0..seq_len-1, in x's dtype
         """
+        if x.size(1) > self.max_seq_len:
+            raise ValueError(f"Sequence length {x.size(1)} exceeds sinusoidal max_seq_len {self.max_seq_len}")
+        return x + self.pos_enc[:, : x.size(1)].to(x.dtype)
 
-        x = x + self.pos_enc[:, : x.size(1), :]
-        return x
+
+POS_ENCODING_TYPES = ("rotary", "sinusoidal")
+
+
+def uses_rotary(pos_encoding_type):
+    """Validate a model-level positional mode and return whether self-attention rotates queries and keys."""
+    if pos_encoding_type not in POS_ENCODING_TYPES:
+        raise ValueError(f"pos_encoding_type must be one of {POS_ENCODING_TYPES}, got {pos_encoding_type!r}")
+    return pos_encoding_type == "rotary"
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads, pos_encoding_type, max_seq_len=512, dropout_rate=0.2):
+    def __init__(self, embed_dim, n_heads, rotary=False, max_seq_len=512, dropout_rate=0.2):
         """
         Parameters:
             embed_dim: dimension of embeddings
             n_heads: number of attention heads
-            pos_encoding_type: type of positional encoding ("sinusoidal" or "rotary")
-            max_seq_len: maximum sequence length
+            rotary: rotate queries and keys with RoPE; only meaningful for self-attention
+            max_seq_len: initial RoPE cache length
             dropout_rate: dropout rate
         """
         super().__init__()
+        if embed_dim % n_heads != 0:
+            raise ValueError("Embedding dimension must be divisible by number of heads")
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
         self.do_0 = nn.Dropout(dropout_rate)
         self.do_1 = nn.Dropout(dropout_rate)
-        self.pos_encoding_type = pos_encoding_type
+        self.rotary = rotary
 
-        if pos_encoding_type == "rotary":
+        if rotary:
             self.rope = RotaryPositionalEncoding(self.head_dim, max_seq_len)
-
-        assert self.head_dim * n_heads == embed_dim, "Embedding dimension must be divisible by number of heads"
 
         self.q_linear = nn.Linear(embed_dim, embed_dim, bias=False)
         self.k_linear = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -177,8 +240,7 @@ class MultiHeadAttention(nn.Module):
         K = K.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
         V = V.view(batch_size, -1, self.n_heads, self.head_dim).transpose(1, 2)
 
-        # Apply RoPE if selected
-        if self.pos_encoding_type == "rotary":
+        if self.rotary:
             Q = self.rope(Q)
             K = self.rope(K)
 
@@ -205,7 +267,8 @@ class GPTDecoderBlock(nn.Module):
         embed_dim,
         expansion_factor=4,
         n_heads=8,
-        pos_encoding_type="rotary",
+        rotary=True,
+        max_seq_len=512,
         dropout_rate=0.2,
     ):
         super().__init__()
@@ -213,7 +276,8 @@ class GPTDecoderBlock(nn.Module):
         self.attention = MultiHeadAttention(
             embed_dim,
             n_heads,
-            pos_encoding_type=pos_encoding_type,
+            rotary=rotary,
+            max_seq_len=max_seq_len,
             dropout_rate=dropout_rate,
         )
         self.norm_0 = nn.LayerNorm(embed_dim)
@@ -243,14 +307,18 @@ class GPTDecoder(nn.Module):
         n_heads=8,
         dropout_rate=0.2,
         pos_encoding_type="rotary",
+        max_seq_len=512,
     ):
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
+        self.pos_encoding_type = pos_encoding_type
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
+        self.pos_encoding = None if rotary else PositionalEncoding(max_seq_len, embed_dim)
         self.embed_dropout = nn.Dropout(dropout_rate)
         self.layers = nn.ModuleList(
             [
-                GPTDecoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type, dropout_rate)
+                GPTDecoderBlock(embed_dim, expansion_factor, n_heads, rotary, max_seq_len, dropout_rate)
                 for _ in range(num_layers)
             ]
         )
@@ -259,6 +327,8 @@ class GPTDecoder(nn.Module):
 
     def forward(self, x, mask):
         x = self.word_embedding(x)
+        if self.pos_encoding is not None:
+            x = self.pos_encoding(x)
         x = self.embed_dropout(x)
 
         for layer in self.layers:
@@ -270,17 +340,20 @@ class GPTDecoder(nn.Module):
 
 
 class TransformerEncoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, pos_encoding_type="rotary", dropout_rate=0.2):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, rotary=True, max_seq_len=512, dropout_rate=0.2):
         """
         Parameters:
             embed_dim: dimension of the embedding vector
             expansion_factor: factor which determines the dimension of the linear layer
             n_heads: number of attention heads.
+            rotary: rotate queries and keys; must be False when used for cross-attention
+            max_seq_len: initial RoPE cache length
+            dropout_rate: dropout rate for attention and residual paths
         """
         super().__init__()
 
         self.attention = MultiHeadAttention(
-            embed_dim, n_heads, pos_encoding_type=pos_encoding_type, dropout_rate=dropout_rate
+            embed_dim, n_heads, rotary=rotary, max_seq_len=max_seq_len, dropout_rate=dropout_rate
         )
         self.norm1 = nn.LayerNorm(embed_dim)
         self.norm2 = nn.LayerNorm(embed_dim)
@@ -307,7 +380,15 @@ class TransformerEncoderBlock(nn.Module):
 
 class TransformerEncoder(nn.Module):
     def __init__(
-        self, seq_len, vocab_size, embed_dim, num_layers=2, expansion_factor=4, n_heads=8, pos_encoding_type="rotary"
+        self,
+        seq_len,
+        vocab_size,
+        embed_dim,
+        num_layers=2,
+        expansion_factor=4,
+        n_heads=8,
+        pos_encoding_type="rotary",
+        dropout_rate=0.2,
     ):
         """
         Parameters:
@@ -317,23 +398,27 @@ class TransformerEncoder(nn.Module):
             num_layers: number of encoder layers
             expansion_factor: factor which determines the linear layers in feed forward step
             n_heads: number of heads for multi head attention
+            pos_encoding_type: "rotary" (rotate self-attention) or "sinusoidal" (add an absolute table)
+            dropout_rate: dropout rate for every layer
         Returns:
             out: output of the encoder.
         """
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
 
         self.embedding_layer = Embedding(vocab_size, embed_dim)
-        self.pos_encoding = PositionalEncoding(seq_len, embed_dim)
+        self.pos_encoding = None if rotary else PositionalEncoding(seq_len, embed_dim)
         self.layers = nn.ModuleList(
             [
-                TransformerEncoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type)
-                for i in range(num_layers)
+                TransformerEncoderBlock(embed_dim, expansion_factor, n_heads, rotary, seq_len, dropout_rate)
+                for _ in range(num_layers)
             ]
         )
 
     def forward(self, x):
-        embed_out = self.embedding_layer(x)
-        out = self.pos_encoding(embed_out)
+        out = self.embedding_layer(x)
+        if self.pos_encoding is not None:
+            out = self.pos_encoding(out)
 
         for layer in self.layers:
             out = layer(out, out, out)
@@ -342,15 +427,18 @@ class TransformerEncoder(nn.Module):
 
 
 class TransformerDecoderBlock(nn.Module):
-    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, pos_encoding_type="rotary", dropout_rate=0.2):
+    def __init__(self, embed_dim, expansion_factor=4, n_heads=8, rotary=True, max_seq_len=512, dropout_rate=0.2):
         super().__init__()
 
         self.attention = MultiHeadAttention(
-            embed_dim, n_heads, pos_encoding_type=pos_encoding_type, dropout_rate=dropout_rate
+            embed_dim, n_heads, rotary=rotary, max_seq_len=max_seq_len, dropout_rate=dropout_rate
         )
         self.norm = nn.LayerNorm(embed_dim)
         self.do = nn.Dropout(dropout_rate)
-        self.encoder_block = TransformerEncoderBlock(embed_dim, expansion_factor, n_heads)
+        # Cross-attention: decoder queries and encoder keys come from different sequences, so no RoPE.
+        self.encoder_block = TransformerEncoderBlock(
+            embed_dim, expansion_factor, n_heads, False, dropout_rate=dropout_rate
+        )
 
     def forward(self, key, x, value, mask):
         att = self.attention(x, x, x, mask)
@@ -372,13 +460,14 @@ class TransformerDecoder(nn.Module):
         pos_encoding_type="rotary",
     ):
         super().__init__()
+        rotary = uses_rotary(pos_encoding_type)
 
         self.word_embedding = Embedding(target_vocab_size, embed_dim)
-        self.pos_enc = PositionalEncoding(seq_len, embed_dim)
+        self.pos_enc = None if rotary else PositionalEncoding(seq_len, embed_dim)
 
         self.layers = nn.ModuleList(
             [
-                TransformerDecoderBlock(embed_dim, expansion_factor, n_heads, pos_encoding_type)
+                TransformerDecoderBlock(embed_dim, expansion_factor, n_heads, rotary, seq_len, dropout_rate)
                 for _ in range(num_layers)
             ]
         )
@@ -388,7 +477,8 @@ class TransformerDecoder(nn.Module):
 
     def forward(self, x, enc_out, mask):
         x = self.word_embedding(x)
-        x = self.pos_enc(x)
+        if self.pos_enc is not None:
+            x = self.pos_enc(x)
         x = self.do(x)
 
         for layer in self.layers:
