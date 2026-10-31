@@ -5,8 +5,6 @@ import struct
 import numpy as np
 import tiktoken
 import torch
-import torch._dynamo
-import torch._inductor.config
 import torch.nn as nn
 import torch.optim as optim
 from pydantic import BaseModel
@@ -14,11 +12,9 @@ from torch.optim.lr_scheduler import LambdaLR, OneCycleLR, ReduceLROnPlateau
 from tqdm import tqdm
 
 from blocks import POS_ENCODING_TYPES
+from devices import DEVICE_HELP, resolve_device
 from gpt import GPT
 from tokenizer import Tokenizer
-
-torch._inductor.config.compile_threads = 1
-torch._dynamo.config.suppress_errors = True
 
 
 class ModelConfig(BaseModel):
@@ -172,14 +168,14 @@ class Dataset(torch.utils.data.Dataset):
 
 
 @torch.no_grad()
-def evaluate(model, criterion, eval_loader, vocab_size):
+def evaluate(model, criterion, eval_loader, vocab_size, device):
     model.eval()
     total_loss = 0
     total_tokens = 0
     with tqdm(eval_loader, unit="batch") as tepoch:
         for src, tgt in tepoch:
-            src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
-            mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
+            src, tgt = src.to(device, non_blocking=True), tgt.to(device, non_blocking=True)
+            mask = model.make_tgt_mask(tgt)
             output = model(src, mask)
             loss = criterion(output.view(-1, vocab_size), tgt.view(-1))
             num_tokens = tgt.numel()
@@ -269,6 +265,7 @@ def main(
     batch_size,
     shuffle,
     pos_encoding_type="rotary",
+    device="cuda",
 ):
     # Load tokenizer
     if tokenizer_type == "tiktoken":
@@ -296,7 +293,8 @@ def main(
     # GPT names the context bound max_seq_len; seq_len also sizes the Dataset windows.
     gpt_params = {k: v for k, v in model_config.model_dump().items() if k != "seq_len"}
     gpt_params["max_seq_len"] = model_config.seq_len
-    model = GPT(**gpt_params).to("cuda")
+    device = resolve_device(device)
+    model = GPT(**gpt_params).to(device)
     print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
     # Disable compilation as it's causing segmentation faults
     # try:
@@ -321,7 +319,7 @@ def main(
         batch_size=dataset_config.batch_size,
         shuffle=dataset_config.shuffle,
         num_workers=4,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
     )
 
     # Use shuffle=False for eval loader config
@@ -331,7 +329,7 @@ def main(
         batch_size=eval_dataset_config.batch_size,  # Use eval config batch size
         shuffle=eval_dataset_config.shuffle,  # Use eval config shuffle (False)
         num_workers=4,
-        pin_memory=True,
+        pin_memory=device.type == "cuda",
     )
 
     # Early stopping setup
@@ -351,8 +349,8 @@ def main(
         train_loss = 0
         with tqdm(train_loader, unit="batch") as tepoch:
             for step, (src, tgt) in enumerate(tepoch):
-                src, tgt = src.cuda(non_blocking=True), tgt.cuda(non_blocking=True)
-                mask = model.make_tgt_mask(tgt).cuda(non_blocking=True)
+                src, tgt = src.to(device, non_blocking=True), tgt.to(device, non_blocking=True)
+                mask = model.make_tgt_mask(tgt)
                 optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
                 output = model(src, mask)
                 loss = criterion(output.view(-1, model_config.tgt_vocab_size), tgt.view(-1))
@@ -370,7 +368,7 @@ def main(
                 dynamic_interval = max(100, eval_interval - (epoch * 50))
 
                 if step % dynamic_interval == 0 and step != 0:
-                    eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
+                    eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size, device)
                     print(f"Step {global_step} | Eval Loss: {eval_loss:.4f} | LR: {current_lr:.6f}")
 
                     # Update scheduler
@@ -398,7 +396,7 @@ def main(
             train_loss /= len(train_loader)
 
         # Epoch-level evaluation
-        eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size)
+        eval_loss = evaluate(model, criterion, eval_loader, model_config.tgt_vocab_size, device)
         print(
             f"Epoch {epoch} | \
               Train Loss: {train_loss:.4f} | \
@@ -540,6 +538,7 @@ if __name__ == "__main__":
         default=model_config.pos_encoding_type,
         help=f"Positional encoding (default: {model_config.pos_encoding_type})",
     )
+    parser.add_argument("--device", default="cuda", help=DEVICE_HELP)
 
     args = parser.parse_args()
 
@@ -564,4 +563,5 @@ if __name__ == "__main__":
         args.batch_size,
         args.shuffle,
         pos_encoding_type=args.pos_encoding_type,
+        device=args.device,
     )

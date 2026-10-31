@@ -14,6 +14,7 @@ import torch
 import torch.nn.functional as F
 
 from blocks import POS_ENCODING_TYPES
+from devices import DEVICE_HELP, resolve_device
 from gpt import GPT
 from tokenizer import Tokenizer
 
@@ -94,9 +95,7 @@ def atomic_save(checkpoint, path):
 
 
 def train(args):
-    device = torch.device(args.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA is unavailable. Run this command on the GPU machine.")
+    device = resolve_device(args.device)
     if device.type != "cuda" and args.precision != "fp32":
         raise ValueError("Use --precision fp32 for a CPU smoke test")
     if args.resume is None and any((args.output_dir / name).exists() for name in ("last.pth", "best.pth")):
@@ -286,7 +285,7 @@ def main():
     parser.add_argument("--checkpoint_seconds", type=float, default=600)
     parser.add_argument("--log_interval", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--device", default="cuda", help=DEVICE_HELP)
     args = parser.parse_args()
     positive = (
         args.max_hours,

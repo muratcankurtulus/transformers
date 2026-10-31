@@ -3,6 +3,7 @@ import argparse
 import torch
 
 from blocks import POS_ENCODING_TYPES
+from devices import DEVICE_HELP, resolve_device
 from gpt import GPT
 from tokenizer import Tokenizer
 
@@ -21,7 +22,7 @@ def main():
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", choices=("cuda", "cpu"), default="cuda")
+    parser.add_argument("--device", default="cuda", help=DEVICE_HELP)
     args = parser.parse_args()
     if args.length < 0:
         parser.error("--length must be nonnegative")
@@ -43,7 +44,7 @@ def main():
     config.setdefault("max_seq_len", seq_len)
     tokenizer.validate_vocab_size(config["tgt_vocab_size"])
     torch.manual_seed(args.seed)
-    model = GPT(**config).to(args.device).eval()
+    model = GPT(**config).to(resolve_device(args.device)).eval()
     model.load_state_dict(checkpoint["model_state_dict"])
     # The prepared corpus has text separators, rather than explicit special-token IDs.
     generated = model.generate(
