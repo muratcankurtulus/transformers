@@ -26,66 +26,107 @@ class Embedding(nn.Module):
 
 
 class RotaryPositionalEncoding(nn.Module):
-    def __init__(self, dim, max_seq_len):
+    """Rotary Position Embedding (RoFormer, arXiv:2104.09864) over adjacent feature pairs.
+
+    Dtype policy: rotation angles and the cos/sin caches are always FP32. They are cast to the
+    input dtype only for the final rotation, so the output dtype equals the input dtype (FP32,
+    FP16 or BF16) and autocast-produced half-precision Q/K stay half precision.
+
+    The caches are non-persistent and rebuilt on demand when a request needs more positions,
+    the input lives on another device, or a module-wide ``.half()``/``.to(dtype)`` downcast them.
+    """
+
+    LEGACY_BUFFERS = ("inv_freq", "cos_cached", "sin_cached")
+
+    def __init__(self, dim, max_seq_len, base=10000.0):
         """
-        Rotary Position Embedding (RoPE) implementation
         Parameters:
-            dim: dimension of embeddings (must be divisible by 2)
-            max_seq_len: maximum sequence length
+            dim: rotary feature dimension; must be a positive even integer
+            max_seq_len: number of positions to precompute; longer requests grow the cache
+            base: frequency base of the rotation angles
         """
         super().__init__()
+        if dim <= 0 or dim % 2 != 0:
+            raise ValueError(f"RoPE dimension must be a positive even integer, got {dim}")
+        if max_seq_len <= 0:
+            raise ValueError(f"RoPE max_seq_len must be positive, got {max_seq_len}")
         self.dim = dim
         self.max_seq_len = max_seq_len
+        self.base = base
+        self.register_buffer("cos_cached", torch.empty(0, dim // 2), persistent=False)
+        self.register_buffer("sin_cached", torch.empty(0, dim // 2), persistent=False)
+        self._build_cache(max_seq_len, torch.device("cpu"))
 
-        # Generate inverse frequency bands for half the dimension (since we apply to pairs)
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq)
+    def _angles(self, positions):
+        """FP32 rotation angles of shape [*positions.shape, dim/2], on the positions' device."""
+        exponents = torch.arange(0, self.dim, 2, device=positions.device, dtype=torch.float32) / self.dim
+        inv_freq = 1.0 / (self.base**exponents)
+        return positions.to(torch.float32).unsqueeze(-1) * inv_freq
 
-        # Cache position embeddings
-        self._update_cos_sin_cache(max_seq_len)
+    def _build_cache(self, length, device):
+        angles = self._angles(torch.arange(length, device=device))
+        self.cos_cached = torch.cos(angles)
+        self.sin_cached = torch.sin(angles)
 
-    def _update_cos_sin_cache(self, seq_len):
-        """Update cached position embeddings"""
-        positions = torch.arange(seq_len, device=self.inv_freq.device).float()
-        freqs = torch.einsum("i,j->ij", positions, self.inv_freq)
-        # [seq_len, dim/2]
+    def _cached_cos_sin(self, start, length, device):
+        end = start + length
+        cache = self.cos_cached
+        cache_len = cache.size(0)
+        if cache_len < end:
+            # Grow geometrically so token-by-token decoding past the cache does not rebuild every step.
+            self._build_cache(max(end, 2 * cache_len), device)
+        elif cache.device != device or cache.dtype != torch.float32:
+            self._build_cache(cache_len, device)
+        return self.cos_cached[start:end], self.sin_cached[start:end]
 
-        self.register_buffer("cos_cached", torch.cos(freqs))
-        self.register_buffer("sin_cached", torch.sin(freqs))
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Checkpoints saved before the caches became non-persistent still carry them.
+        for name in self.LEGACY_BUFFERS:
+            state_dict.pop(prefix + name, None)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
-    def forward(self, x):
+    def forward(self, x, position_ids=None, offset=0):
         """
-        Apply rotary position embeddings to input tensor
+        Rotate feature pairs of ``x`` by their absolute positions.
+
         Args:
-            x: Input tensor of shape [batch_size, seq_len, dim] or [batch_size, n_heads, seq_len, head_dim]
+            x: floating tensor [batch, seq_len, dim] or [batch, n_heads, seq_len, dim]
+            position_ids: optional integer positions [seq_len] or [batch, seq_len]
+            offset: position of the first token when ``position_ids`` is omitted,
+                e.g. the number of tokens already in a KV cache
+        Returns:
+            tensor of the same shape, dtype and device as ``x``
         """
-        if len(x.shape) == 4:
-            batch_size, n_heads, seq_len, head_dim = x.shape
-            reshape_shape = (batch_size, n_heads, seq_len, head_dim // 2, 2)
+        if x.dim() not in (3, 4):
+            raise ValueError(f"RoPE expects a 3D or 4D tensor, got shape {tuple(x.shape)}")
+        if x.size(-1) != self.dim:
+            raise ValueError(f"RoPE expects last dimension {self.dim}, got {x.size(-1)}")
+        if not x.is_floating_point():
+            raise TypeError(f"RoPE expects a floating tensor, got {x.dtype}")
+        seq_len = x.size(-2)
+
+        if position_ids is None:
+            if offset < 0:
+                raise ValueError(f"RoPE offset must be non-negative, got {offset}")
+            cos, sin = self._cached_cos_sin(offset, seq_len, x.device)  # [seq_len, dim/2]
         else:
-            batch_size, seq_len, dim = x.shape
-            reshape_shape = (batch_size, seq_len, dim // 2, 2)
+            if offset != 0:
+                raise ValueError("Pass either position_ids or offset to RoPE, not both")
+            if position_ids.dtype.is_floating_point or position_ids.dtype.is_complex:
+                raise TypeError(f"RoPE position_ids must be integers, got {position_ids.dtype}")
+            if position_ids.dim() not in (1, 2) or position_ids.size(-1) != seq_len:
+                raise ValueError(
+                    f"RoPE position_ids must have shape [{seq_len}] or [batch, {seq_len}], "
+                    f"got {tuple(position_ids.shape)}"
+                )
+            angles = self._angles(position_ids.to(x.device))
+            cos, sin = torch.cos(angles), torch.sin(angles)  # [(batch,) seq_len, dim/2]
+            if x.dim() == 4 and position_ids.dim() == 2:
+                cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)  # broadcast across heads
 
-        if seq_len > self.max_seq_len:
-            self._update_cos_sin_cache(seq_len)
-            self.max_seq_len = seq_len
-
-        cos = self.cos_cached[:seq_len, :]  # [seq_len, dim/2]
-        sin = self.sin_cached[:seq_len, :]  # [seq_len, dim/2]
-
-        # Real-valued pairs preserve the autocast dtype, including FP16 on Turing GPUs.
-        x_2 = x.reshape(*reshape_shape)
         cos = cos.to(dtype=x.dtype)
         sin = sin.to(dtype=x.dtype)
-
-        if len(x.shape) == 4:
-            cos = cos.unsqueeze(0).unsqueeze(0)
-            sin = sin.unsqueeze(0).unsqueeze(0)
-        else:
-            cos = cos.unsqueeze(0)
-            sin = sin.unsqueeze(0)
-
-        even, odd = x_2.unbind(-1)
+        even, odd = x.reshape(*x.shape[:-1], self.dim // 2, 2).unbind(-1)
         return torch.stack((even * cos - odd * sin, even * sin + odd * cos), dim=-1).flatten(-2)
 
 
