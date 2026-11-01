@@ -33,11 +33,16 @@ class DatasetConfig(BaseModel):
     shuffle: bool = True
 
 
-def save_checkpoint(model, file_path: str, tokenizer) -> None:
-    """Save weights with the custom tokenizer identity required to interpret their IDs."""
+def save_checkpoint(model, file_path: str, tokenizer, model_config: dict | None = None) -> None:
+    """Save weights with the custom tokenizer identity required to interpret their IDs.
+
+    ``model_config`` holds the GPT constructor arguments, so generation can rebuild the model.
+    """
     state = model.state_dict()
     if isinstance(tokenizer, Tokenizer):
         state = {"model_state_dict": state, "tokenizer": tokenizer.metadata}
+        if model_config is not None:
+            state["model_config"] = model_config
     torch.save(state, file_path)
 
 
@@ -379,7 +384,7 @@ def main(
                         best_loss = eval_loss
                         early_stopping_counter = 0
                         # Save best model
-                        save_checkpoint(model, best_model_path, tokenizer)
+                        save_checkpoint(model, best_model_path, tokenizer, gpt_params)
                         print(f"New best model saved! Loss: {best_loss:.4f}")
                     else:
                         early_stopping_counter += 1
@@ -412,7 +417,7 @@ def main(
             best_loss = eval_loss
             early_stopping_counter = 0
             # Save best model
-            save_checkpoint(model, best_model_path, tokenizer)
+            save_checkpoint(model, best_model_path, tokenizer, gpt_params)
             print(f"New best model saved! Loss: {best_loss:.4f}")
         else:
             early_stopping_counter += 1
@@ -424,7 +429,7 @@ def main(
 
         # Also save regular checkpoints
         if epoch % 5 == 0 and epoch != 0:
-            save_checkpoint(model, f"{experiment_name}_e{epoch}.pth", tokenizer)
+            save_checkpoint(model, f"{experiment_name}_e{epoch}.pth", tokenizer, gpt_params)
             print(f"Checkpoint saved at epoch {epoch}")
 
     print(f"Training completed. Best eval loss: {best_loss:.4f}")

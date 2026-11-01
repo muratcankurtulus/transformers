@@ -1,9 +1,10 @@
-from typing import List, Union
+from collections.abc import Sequence
 
 import torch
 import torch.nn as nn
 
 from blocks import GPTDecoder
+from generation import as_token_batch, decode, validate_generation_settings
 
 
 class GPT(nn.Module):
@@ -30,9 +31,12 @@ class GPT(nn.Module):
             pos_encoding_type (str, optional): "rotary" rotates queries/keys; "sinusoidal" adds an
                 absolute table to the embeddings. Defaults to "rotary".
             dropout_rate (float, optional): Dropout rate for regularization. Defaults to 0.2.
-            max_seq_len (int, optional): Sinusoidal table length and initial RoPE cache length. Defaults to 512.
+            max_seq_len (int, optional): Trained context: sinusoidal table length, initial RoPE cache length,
+                and the largest generation context window. Defaults to 512.
         """
         super().__init__()
+        self.vocab_size = tgt_vocab_size
+        self.max_seq_len = max_seq_len
 
         self.decoder = GPTDecoder(
             tgt_vocab_size,
@@ -63,59 +67,62 @@ class GPT(nn.Module):
     @torch.no_grad()
     def generate(
         self,
-        input_ids: Union[List[int], torch.Tensor],
-        max_length: int,
+        input_ids: Sequence[int] | Sequence[Sequence[int]] | torch.Tensor,
+        max_new_tokens: int,
         temperature: float = 0.0,
         top_k: int = 0,
         top_p: float = 1.0,
-        context_length: int = 256,
-        forbidden_token_ids: List[int] | None = None,
+        context_length: int | None = None,
+        forbidden_token_ids: Sequence[int] | None = None,
+        eos_token_id: int | None = None,
     ) -> torch.Tensor:
         """
-        Generate a sequence of tokens.
+        Continue each prompt autoregressively.
+
+        Context limit: every step conditions on at most the last ``context_length`` tokens (a sliding
+        window), so prompt plus output may exceed the trained context. The window itself may not
+        exceed ``max_seq_len``, the context the positional encoding was built and trained for.
 
         Args:
-            input_ids (torch.Tensor): Input tensor containing token IDs.
-            max_length (int): Maximum length of the generated sequence.
+            input_ids: Nonempty prompt as a list of IDs, equal-length ID lists, or an integer tensor
+                shaped [length] or [batch, length].
+            max_new_tokens: Upper bound on tokens appended to each prompt.
+            temperature: Sampling temperature; 0 selects greedy decoding.
+            top_k: Keep only the k most likely tokens; 0 disables the filter.
+            top_p: Nucleus sampling probability mass in (0, 1].
+            context_length: Sliding-window size; defaults to ``max_seq_len``.
+            forbidden_token_ids: IDs that are never generated.
+            eos_token_id: Stop a sequence once it emits this ID; finished rows are padded with it.
 
         Returns:
-            torch.Tensor: Generated sequence of token IDs.
+            torch.Tensor: [batch, prompt_length + n] token IDs with n <= max_new_tokens; n is smaller
+            only when every sequence emitted ``eos_token_id``.
         """
-        if temperature < 0 or top_k < 0 or not 0 < top_p <= 1 or context_length < 1:
-            raise ValueError("Invalid sampling settings")
+        context_length = self.max_seq_len if context_length is None else context_length
+        if not 1 <= context_length <= self.max_seq_len:
+            raise ValueError(
+                f"context_length must be in [1, max_seq_len={self.max_seq_len}], got {context_length}; "
+                "positions past the trained context are unsupported"
+            )
+        validate_generation_settings(
+            self.vocab_size, max_new_tokens, temperature, top_k, top_p, eos_token_id, forbidden_token_ids
+        )
+        tokens = as_token_batch(input_ids, self.vocab_size, next(self.parameters()).device)
+        was_training = self.training
         self.eval()
-        device = next(self.parameters()).device
-        if isinstance(input_ids, list):
-            input_ids = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0)
-        else:
-            input_ids = input_ids.to(device)
-            if input_ids.ndim == 1:
-                input_ids = input_ids.unsqueeze(0)
-        if input_ids.ndim != 2 or input_ids.size(1) == 0:
-            raise ValueError("Generation requires a nonempty prompt")
-        generated = input_ids.clone()
-        for _ in range(max_length):
-            context = generated[:, -context_length:]
-            logits = self(context)[:, -1, :].float()
-            if forbidden_token_ids:
-                logits[:, forbidden_token_ids] = float("-inf")
-            if temperature == 0:
-                next_token = logits.argmax(dim=-1, keepdim=True)
-            else:
-                logits /= temperature
-                if top_k:
-                    threshold = logits.topk(min(top_k, logits.size(-1))).values[:, -1:]
-                    logits = logits.masked_fill(logits < threshold, float("-inf"))
-                if top_p < 1:
-                    sorted_logits, sorted_indices = logits.sort(descending=True)
-                    remove = sorted_logits.softmax(-1).cumsum(-1) > top_p
-                    remove[:, 1:] = remove[:, :-1].clone()
-                    remove[:, 0] = False
-                    remove = torch.zeros_like(remove).scatter(1, sorted_indices, remove)
-                    logits = logits.masked_fill(remove, float("-inf"))
-                next_token = torch.multinomial(logits.softmax(-1), num_samples=1)
-            generated = torch.cat((generated, next_token), dim=1)
-        return generated
+        try:
+            return decode(
+                lambda history: self(history[:, -context_length:])[:, -1, :],
+                tokens,
+                max_new_tokens,
+                temperature,
+                top_k,
+                top_p,
+                eos_token_id,
+                forbidden_token_ids,
+            )
+        finally:
+            self.train(was_training)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
         """

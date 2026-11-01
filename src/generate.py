@@ -17,15 +17,27 @@ def main():
         parser.add_argument(f"--{name}", type=int, help="Override saved config; required for older checkpoints")
     parser.add_argument("--dropout_rate", type=float)
     parser.add_argument("--pos_encoding_type", choices=POS_ENCODING_TYPES, help="Override saved config")
-    parser.add_argument("--length", type=int, default=100, help="Number of new tokens")
+    parser.add_argument(
+        "--max_new_tokens",
+        "--length",
+        dest="max_new_tokens",
+        type=int,
+        default=100,
+        help="Maximum number of new tokens (--length is an alias)",
+    )
+    parser.add_argument(
+        "--stop_at_eos",
+        action="store_true",
+        help="Allow <EOS> and stop when it is generated; off by default because the prepared corpus has no EOS",
+    )
     parser.add_argument("--temperature", type=float, default=0.8, help="Zero selects greedy decoding")
     parser.add_argument("--top_k", type=int, default=50)
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda", help=DEVICE_HELP)
     args = parser.parse_args()
-    if args.length < 0:
-        parser.error("--length must be nonnegative")
+    if args.max_new_tokens < 0:
+        parser.error("--max_new_tokens must be nonnegative")
     tokenizer = Tokenizer.load(args.tokenizer_path)
     checkpoint = torch.load(args.model_path, map_location="cpu", weights_only=True)
     tokenizer.validate_metadata(checkpoint.get("tokenizer"), args.model_path)
@@ -36,7 +48,7 @@ def main():
             config[name] = value
         if name not in config:
             parser.error(f"Checkpoint has no model configuration; supply --{name}")
-    seq_len = args.seq_len if args.seq_len is not None else checkpoint.get("seq_len")
+    seq_len = args.seq_len if args.seq_len is not None else checkpoint.get("seq_len", config.get("max_seq_len"))
     if seq_len is None or seq_len < 1:
         parser.error("Supply a positive --seq_len for the checkpoint's training context")
     if args.pos_encoding_type is not None:
@@ -47,14 +59,16 @@ def main():
     model = GPT(**config).to(resolve_device(args.device)).eval()
     model.load_state_dict(checkpoint["model_state_dict"])
     # The prepared corpus has text separators, rather than explicit special-token IDs.
+    eos_token_id = tokenizer.SPECIAL_TOKENS["<EOS>"] if args.stop_at_eos else None
     generated = model.generate(
         tokenizer.encode(args.prompt),
-        args.length,
+        args.max_new_tokens,
         temperature=args.temperature,
         top_k=args.top_k,
         top_p=args.top_p,
         context_length=seq_len,
-        forbidden_token_ids=list(tokenizer.SPECIAL_TOKENS.values()),
+        forbidden_token_ids=[i for i in tokenizer.SPECIAL_TOKENS.values() if i != eos_token_id],
+        eos_token_id=eos_token_id,
     )
     print(tokenizer.decode(generated))
 
