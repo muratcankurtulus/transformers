@@ -476,6 +476,7 @@ class TransformerDecoder(nn.Module):
         self.do = nn.Dropout(dropout_rate)
 
     def forward(self, x, enc_out, mask):
+        """Return raw vocabulary logits [batch, target_length, target_vocab_size]; no softmax is applied."""
         x = self.word_embedding(x)
         if self.pos_enc is not None:
             x = self.pos_enc(x)
@@ -484,5 +485,4 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             x = layer(enc_out, x, enc_out, mask)
 
-        out = F.softmax(self.fully_connected(x))
-        return out
+        return self.fully_connected(x)
