@@ -13,8 +13,14 @@ def main():
     parser.add_argument("--prompt", required=True)
     parser.add_argument("--model_path", required=True)
     parser.add_argument("--tokenizer_path", required=True)
-    for name in ("embed_dim", "n_heads", "num_layers", "expansion_factor", "seq_len", "tgt_vocab_size"):
+    for name in ("embed_dim", "n_heads", "num_layers", "expansion_factor", "tgt_vocab_size"):
         parser.add_argument(f"--{name}", type=int, help="Override saved config; required for older checkpoints")
+    parser.add_argument(
+        "--seq_len",
+        type=int,
+        help="Context window; defaults to the trained context and may not exceed it. "
+        "Also sets max_seq_len for older checkpoints that lack it",
+    )
     parser.add_argument("--dropout_rate", type=float)
     parser.add_argument("--pos_encoding_type", choices=POS_ENCODING_TYPES, help="Override saved config")
     parser.add_argument(
@@ -54,6 +60,8 @@ def main():
     if args.pos_encoding_type is not None:
         config["pos_encoding_type"] = args.pos_encoding_type
     config.setdefault("max_seq_len", seq_len)
+    if seq_len > config["max_seq_len"]:
+        parser.error(f"--seq_len {seq_len} exceeds the checkpoint's trained context ({config['max_seq_len']} tokens)")
     tokenizer.validate_vocab_size(config["tgt_vocab_size"])
     torch.manual_seed(args.seed)
     model = GPT(**config).to(resolve_device(args.device)).eval()

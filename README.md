@@ -131,8 +131,9 @@ python src/generate.py \
 `GPT.generate` and `Transformer.generate` accept a single prompt or an equal-length batch and take
 `max_new_tokens` and `eos_token_id`. Each sequence stops independently at EOS, and finished rows are
 padded with EOS. Encoder–decoder generation encodes the source once, feeds the decoder the full target
-history, and rejects sources longer than `seq_len` or target start plus `max_new_tokens` above `seq_len`.
-Empty prompts, ragged batches, non-integer or out-of-vocabulary IDs, and invalid sampling settings raise
+history, and rejects sources longer than `seq_len` or requests whose decoder history (target start plus
+`max_new_tokens`, minus the final token that is never fed back) would exceed `seq_len`. Empty prompts,
+ragged batches, non-integer or out-of-vocabulary IDs, and invalid sampling settings raise
 `ValueError`/`TypeError` before any computation.
 
 ### Positional encoding and devices

@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from blocks import GPTDecoder
-from generation import as_token_batch, decode, validate_generation_settings
+from generation import as_token_batch, checked_int, decode, validate_settings
 
 
 class GPT(nn.Module):
@@ -98,15 +98,15 @@ class GPT(nn.Module):
             torch.Tensor: [batch, prompt_length + n] token IDs with n <= max_new_tokens; n is smaller
             only when every sequence emitted ``eos_token_id``.
         """
-        context_length = self.max_seq_len if context_length is None else context_length
+        if context_length is None:
+            context_length = self.max_seq_len
+        context_length = checked_int(context_length, "context_length")
         if not 1 <= context_length <= self.max_seq_len:
             raise ValueError(
                 f"context_length must be in [1, max_seq_len={self.max_seq_len}], got {context_length}; "
                 "positions past the trained context are unsupported"
             )
-        validate_generation_settings(
-            self.vocab_size, max_new_tokens, temperature, top_k, top_p, eos_token_id, forbidden_token_ids
-        )
+        validate_settings(self.vocab_size, max_new_tokens, temperature, top_k, top_p, eos_token_id, forbidden_token_ids)
         tokens = as_token_batch(input_ids, self.vocab_size, next(self.parameters()).device)
         was_training = self.training
         self.eval()

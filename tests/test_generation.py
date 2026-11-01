@@ -2,14 +2,16 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import torch
 
 import generate
-from generation import decode
+import train_gpt
+from generation import decode, select_next_token
 from gpt import GPT
 from tokenizer import Tokenizer
 from train_gpt import save_checkpoint
@@ -74,10 +76,10 @@ class GPTGenerationTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(0)
 
-    def scripted(self, model, seen_lengths=None):
+    def scripted(self, model, seen_windows=None):
         def forward(x, mask=None):
-            if seen_lengths is not None:
-                seen_lengths.append(x.size(1))
+            if seen_windows is not None:
+                seen_windows.append(x.tolist())
             logits = successor_logits(x)
             return logits.unsqueeze(1).expand(x.size(0), x.size(1), VOCAB)
 
@@ -105,14 +107,22 @@ class GPTGenerationTests(unittest.TestCase):
         self.assertTrue(torch.equal(batched, torch.cat(rows)))
         self.assertEqual(model.generate([1], 0).tolist(), [[1]])
 
-    def test_sliding_window_never_exceeds_the_context_length(self):
+    def test_sliding_window_conditions_on_the_most_recent_tokens(self):
         model = tiny_gpt(max_seq_len=4)
         seen = []
         with self.scripted(model, seen):
             output = model.generate([1, 2, 3, 4, 5, 6], 3)
 
-        self.assertEqual(output.shape, (1, 9))
-        self.assertEqual(seen, [4, 4, 4])
+        self.assertEqual(output.tolist(), [[1, 2, 3, 4, 5, 6, 7, 0, 1]])
+        self.assertEqual(seen, [[[3, 4, 5, 6]], [[4, 5, 6, 7]], [[5, 6, 7, 0]]])
+
+    def test_explicit_context_length_narrows_the_window(self):
+        model = tiny_gpt(max_seq_len=4)
+        seen = []
+        with self.scripted(model, seen):
+            model.generate([1, 2, 3], 2, context_length=np.int64(2))
+
+        self.assertEqual(seen, [[[2, 3]], [[3, 4]]])
 
     def test_sinusoidal_model_generates_past_its_table_by_sliding(self):
         model = tiny_gpt(pos_encoding_type="sinusoidal", max_seq_len=4)
@@ -132,12 +142,47 @@ class GPTGenerationTests(unittest.TestCase):
 
         self.assertEqual(output.tolist(), [[1, 2, EOS], [3, 4, EOS]])
 
-    def test_generation_restores_training_mode(self):
-        model = tiny_gpt().train()
+    def test_generation_runs_in_eval_mode_and_restores_the_callers_mode(self):
+        for training in (True, False):
+            with self.subTest(training=training):
+                model = tiny_gpt().train(training)
+                modes = []
 
-        model.generate([1, 2], 2)
+                def forward(x, mask=None):
+                    modes.append(model.training)
+                    raise RuntimeError("forward failed")
 
-        self.assertTrue(model.training)
+                with patch.object(model, "forward", forward), self.assertRaisesRegex(RuntimeError, "forward failed"):
+                    model.generate([1, 2], 2)
+                self.assertEqual(modes, [False])
+                self.assertEqual(model.training, training)
+                model.generate([1, 2], 2)
+                self.assertEqual(model.training, training)
+
+    def test_numpy_integers_are_accepted(self):
+        model = tiny_gpt().eval()
+
+        output = model.generate(np.array([1, 2]), np.int64(2), temperature=1.0, top_k=np.int64(3))
+
+        self.assertEqual(output.shape, (1, 4))
+        self.assertTrue(torch.equal(model.generate(np.array([[1, 2]]), 2), model.generate([1, 2], 2)))
+
+    def test_output_never_aliases_the_prompt(self):
+        model = tiny_gpt()
+        for prompt in (torch.tensor([1, 2]), torch.tensor([[1, 2]])):
+            with self.subTest(shape=tuple(prompt.shape)):
+                output = model.generate(prompt, 0)
+                output.fill_(7)
+                self.assertEqual(prompt.flatten().tolist(), [1, 2])
+
+    def test_forbidden_tokens_do_not_modify_the_callers_logits(self):
+        logits = torch.zeros(1, VOCAB)
+        logits[0, 3] = 1.0
+
+        token = select_next_token(logits, forbidden_token_ids=[3])
+
+        self.assertNotEqual(token.item(), 3)
+        self.assertEqual(logits[0, 3].item(), 1.0)
 
     def test_invalid_prompts_raise_informative_errors(self):
         model = tiny_gpt()
@@ -150,6 +195,8 @@ class GPTGenerationTests(unittest.TestCase):
             "float IDs": (torch.tensor([1.0, 2.0]), TypeError, "integers"),
             "too large ID": ([1, VOCAB], ValueError, r"\[0, 8\)"),
             "negative ID": ([-1, 2], ValueError, r"\[0, 8\)"),
+            "bool IDs": (torch.tensor([True, False]), TypeError, "integers"),
+            "text prompt": ("ab", ValueError, "integer token IDs"),
         }
         for label, (prompt, error, message) in cases.items():
             with self.subTest(label), self.assertRaisesRegex(error, message):
@@ -165,10 +212,24 @@ class GPTGenerationTests(unittest.TestCase):
             "eos outside vocabulary": ({"eos_token_id": VOCAB}, "outside the vocabulary"),
             "zero top_p": ({"top_p": 0.0}, "top_p"),
             "negative temperature": ({"temperature": -1.0}, "temperature"),
+            "NaN temperature": ({"temperature": float("nan")}, "temperature must be finite"),
+            "everything forbidden": ({"forbidden_token_ids": list(range(VOCAB))}, "whole vocabulary"),
         }
         for label, (overrides, message) in cases.items():
             kwargs = {"max_new_tokens": 1} | overrides
             with self.subTest(label), self.assertRaisesRegex(ValueError, message):
+                model.generate([1, 2], **kwargs)
+
+    def test_non_integer_counts_raise_type_errors(self):
+        model = tiny_gpt(max_seq_len=4)
+        cases = {
+            "bool budget": {"max_new_tokens": True},
+            "float budget": {"max_new_tokens": 2.0},
+            "float context": {"max_new_tokens": 1, "context_length": 2.0},
+            "float top_k": {"max_new_tokens": 1, "temperature": 1.0, "top_k": 2.5},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label), self.assertRaisesRegex(TypeError, "must be an integer"):
                 model.generate([1, 2], **kwargs)
 
 
@@ -231,12 +292,41 @@ class TransformerGenerationTests(unittest.TestCase):
         self.assertEqual(model.generate(self.src, self.start, 2).shape, (3, 3))
         self.assertEqual(model.generate(self.src[:, :2], self.start, 8).shape, (3, 9))
 
+    def test_full_trained_context_can_be_generated(self):
+        # The final token is never fed back, so one start token plus seq_len new tokens fits exactly.
+        for mode in ("rotary", "sinusoidal"):
+            with self.subTest(mode=mode):
+                model = tiny_transformer(seq_len=6, pos_encoding_type=mode)
+                lengths = []
+                model.decoder.register_forward_hook(lambda _m, inputs, _out: lengths.append(inputs[0].size(1)))
+
+                output = model.generate(self.src, self.start, 6)
+
+                self.assertEqual(output.shape, (3, 7))
+                self.assertEqual(max(lengths), 6)
+                self.assertTrue(torch.equal(output, self.reference(model, self.src, self.start, 6)))
+
+    def test_generation_runs_in_eval_mode_and_restores_the_callers_mode(self):
+        model = tiny_transformer().train()
+        modes = []
+
+        def decoder(tgt, _enc_out, _mask):
+            modes.append(model.training)
+            raise RuntimeError("decoder failed")
+
+        with patch.object(model.decoder, "forward", decoder), self.assertRaisesRegex(RuntimeError, "decoder failed"):
+            model.generate(self.src, self.start, 2)
+        self.assertEqual(modes, [False])
+        self.assertTrue(model.training)
+        model.generate(self.src, self.start, 2)
+        self.assertTrue(model.training)
+
     def test_invalid_inputs_and_context_overflow_raise_informative_errors(self):
         model = tiny_transformer(seq_len=6)
         cases = {
             "batch mismatch": (self.src, torch.ones(2, 1, dtype=torch.long), 1, "batch sizes differ"),
             "source too long": (torch.ones(3, 7, dtype=torch.long), self.start, 1, "src length 7 exceeds"),
-            "target overflow": (self.src, self.start, 6, "exceeds seq_len 6"),
+            "target overflow": (self.src, self.start, 7, "needs 7 decoder positions, exceeding seq_len 6"),
             "empty target": (self.src, torch.empty(3, 0, dtype=torch.long), 1, "tgt must contain"),
             "empty source": ([], self.start[:1], 1, "src must contain"),
             "target ID outside vocabulary": (self.src, [[VOCAB]] * 3, 1, r"tgt token IDs must be in \[0, 8\)"),
@@ -259,38 +349,127 @@ class GenerateCliTests(unittest.TestCase):
         self.config["max_seq_len"] = 8
         self.model = GPT(**self.config)
         self.checkpoint = self.directory / "model.pth"
+        self.calls = []
 
-    def run_cli(self, *extra):
-        argv = ["generate.py", "--prompt", "ab", "--model_path", str(self.checkpoint), "--device", "cpu"]
-        argv += ["--tokenizer_path", str(self.directory / "tokenizer"), "--temperature", "0", *extra]
-        output = io.StringIO()
-        with patch.object(sys, "argv", argv), redirect_stdout(output):
-            generate.main()
-        return output.getvalue()
+    def run_cli(self, *extra, checkpoint=None):
+        """Run generate.py and return its stdout; each GPT.generate call is recorded in self.calls."""
+        argv = ["generate.py", "--prompt", "ab", "--model_path", str(checkpoint or self.checkpoint)]
+        argv += ["--tokenizer_path", str(self.directory / "tokenizer"), "--device", "cpu", "--temperature", "0"]
+        original = GPT.generate
 
-    def test_train_gpt_checkpoint_reconstructs_without_architecture_flags(self):
-        save_checkpoint(self.model, str(self.checkpoint), self.tokenizer, self.config)
+        def recording(model, *args, **kwargs):
+            output = original(model, *args, **kwargs)
+            self.calls.append((args, kwargs, output))
+            return output
 
-        saved = torch.load(self.checkpoint, weights_only=True)
-        self.assertEqual(saved["model_config"], self.config)
-        # The 8-token sinusoidal table forces the CLI to read max_seq_len from the checkpoint.
-        self.assertTrue(self.run_cli("--max_new_tokens", "12").startswith("ab"))
+        stdout = io.StringIO()
+        with patch.object(sys, "argv", argv + list(extra)), patch.object(GPT, "generate", recording):
+            with redirect_stdout(stdout):
+                generate.main()
+        return stdout.getvalue()
 
-    def test_stop_at_eos_allows_and_stops_on_eos(self):
-        eos = Tokenizer.SPECIAL_TOKENS["<EOS>"]
+    def force_eos_logits(self):
+        """Make every next-token logit 0 except EOS (1.0), so greedy output is fully determined."""
         with torch.no_grad():
             self.model.decoder.fully_connected.weight.zero_()
             self.model.decoder.fully_connected.bias.zero_()
-            self.model.decoder.fully_connected.bias[eos] = 1.0
+            self.model.decoder.fully_connected.bias[Tokenizer.SPECIAL_TOKENS["<EOS>"]] = 1.0
+
+    def test_saved_config_reconstructs_without_architecture_flags(self):
         save_checkpoint(self.model, str(self.checkpoint), self.tokenizer, self.config)
 
-        with patch.object(GPT, "generate", autospec=True, side_effect=GPT.generate) as spy:
-            self.assertEqual(self.run_cli("--stop_at_eos", "--max_new_tokens", "5"), "ab\n")
-        kwargs = spy.call_args.kwargs
+        self.assertEqual(torch.load(self.checkpoint, weights_only=True)["model_config"], self.config)
+        # 2 + 12 tokens overflow the 8-entry sinusoidal table unless the window comes from max_seq_len.
+        self.assertTrue(self.run_cli("--max_new_tokens", "12").startswith("ab"))
+        ((_, kwargs, output),) = self.calls
+        self.assertEqual(kwargs["context_length"], 8)
+        self.assertEqual(output.shape, (1, 14))
+
+    def test_stop_at_eos_allows_and_stops_on_eos(self):
+        eos = Tokenizer.SPECIAL_TOKENS["<EOS>"]
+        self.force_eos_logits()
+        save_checkpoint(self.model, str(self.checkpoint), self.tokenizer, self.config)
+
+        self.assertEqual(self.run_cli("--stop_at_eos", "--max_new_tokens", "5"), "ab\n")
+        ((_, kwargs, output),) = self.calls
         self.assertEqual(kwargs["eos_token_id"], eos)
         self.assertNotIn(eos, kwargs["forbidden_token_ids"])
-        # Without the flag EOS stays forbidden, so the full budget of non-special tokens is generated.
-        self.assertNotEqual(self.run_cli("--length", "5"), "ab\n")
+        self.assertEqual(output.tolist(), [[ord("a"), ord("b"), eos]])
+
+    def test_eos_stays_forbidden_by_default_and_length_is_an_alias(self):
+        self.force_eos_logits()
+        save_checkpoint(self.model, str(self.checkpoint), self.tokenizer, self.config)
+
+        # With every special ID forbidden, the tied zero logits make greedy decoding pick byte 0.
+        self.assertEqual(self.run_cli("--length", "5"), "ab" + "\x00" * 5 + "\n")
+        ((args, kwargs, output),) = self.calls
+        self.assertEqual(args[1], 5)
+        self.assertIsNone(kwargs["eos_token_id"])
+        self.assertEqual(output.shape, (1, 7))
+
+    def test_checkpoint_without_config_requires_flags_and_rejects_oversized_context(self):
+        legacy = self.directory / "legacy.pth"
+        torch.save({"model_state_dict": self.model.state_dict(), "tokenizer": self.tokenizer.metadata}, legacy)
+        flags = ["--embed_dim", "16", "--n_heads", "2", "--num_layers", "1", "--expansion_factor", "4"]
+        flags += ["--tgt_vocab_size", "260", "--dropout_rate", "0", "--pos_encoding_type", "sinusoidal"]
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.run_cli(checkpoint=legacy)
+        self.assertIn("supply --embed_dim", stderr.getvalue())
+
+        self.assertTrue(self.run_cli(*flags, "--seq_len", "8", checkpoint=legacy).startswith("ab"))
+        self.assertEqual(self.calls[-1][1]["context_length"], 8)
+
+        save_checkpoint(self.model, str(self.checkpoint), self.tokenizer, self.config)
+        self.run_cli("--seq_len", "4")
+        self.assertEqual(self.calls[-1][1]["context_length"], 4)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr), self.assertRaises(SystemExit):
+            self.run_cli("--seq_len", "16")
+        self.assertIn("exceeds the checkpoint's trained context (8 tokens)", stderr.getvalue())
+
+    def test_train_gpt_checkpoint_generates_without_architecture_flags(self):
+        text = "the quick brown fox jumps over the lazy dog. " * 4
+        for split in ("train", "eval"):
+            (self.directory / f"{split}.txt").write_text(text, encoding="utf-8")
+        real_loader = torch.utils.data.DataLoader
+
+        def single_process_loader(*args, **kwargs):
+            return real_loader(*args, **(kwargs | {"num_workers": 0}))
+
+        run = self.directory / "run"
+        with patch("torch.utils.data.DataLoader", single_process_loader):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                train_gpt.main(
+                    tokenizer_path=str(self.directory / "tokenizer"),
+                    train_data_path=str(self.directory / "train.txt"),
+                    eval_data_path=str(self.directory / "eval.txt"),
+                    epochs=1,
+                    experiment_name=str(run),
+                    tokenizer_type="default",
+                    eval_interval=1000,
+                    use_pretokenized=False,
+                    weight_decay=0.0,
+                    early_stopping_patience=1,
+                    dropout_rate=0.0,
+                    embed_dim=16,
+                    tgt_vocab_size=260,
+                    seq_len=6,
+                    num_layers=1,
+                    expansion_factor=4,
+                    n_heads=2,
+                    batch_size=16,
+                    shuffle=False,
+                    pos_encoding_type="sinusoidal",
+                    device="cpu",
+                )
+
+        best = Path(f"{run}_best.pth")
+        saved = torch.load(best, weights_only=True)
+        self.assertEqual(saved["model_config"]["max_seq_len"], 6)
+        self.assertEqual(saved["model_config"]["pos_encoding_type"], "sinusoidal")
+        self.assertTrue(self.run_cli("--max_new_tokens", "10", checkpoint=best).startswith("ab"))
+        self.assertEqual(self.calls[-1][1]["context_length"], 6)
 
 
 if __name__ == "__main__":

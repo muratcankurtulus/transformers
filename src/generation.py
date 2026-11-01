@@ -1,14 +1,26 @@
 """Shared autoregressive decoding: prompt validation, token selection and per-sequence EOS stopping."""
 
+import math
+import operator
 from collections.abc import Callable, Sequence
 
 import torch
 
 
-def as_token_batch(token_ids, vocab_size: int, device: torch.device, name: str = "prompt") -> torch.Tensor:
-    """Return token IDs as a nonempty [batch, length] long tensor on ``device``.
+def checked_int(value, name: str) -> int:
+    """Return ``value`` as a Python int; NumPy and PyTorch integers are accepted, bools and floats are not."""
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an integer, got {value!r}")
+    try:
+        return operator.index(value)
+    except TypeError:
+        raise TypeError(f"{name} must be an integer, got {value!r}") from None
 
-    Accepts a list of IDs, a list of equal-length ID lists, or an integer tensor shaped [length] or
+
+def as_token_batch(token_ids, vocab_size: int, device: torch.device, name: str = "prompt") -> torch.Tensor:
+    """Return a new nonempty [batch, length] long tensor of token IDs on ``device``.
+
+    Accepts a list of IDs, a list of equal-length ID lists, or an integer tensor/array shaped [length] or
     [batch, length]. Variable-length batches are rejected because generation has no padding mask.
     """
     if isinstance(token_ids, torch.Tensor):
@@ -16,9 +28,9 @@ def as_token_batch(token_ids, vocab_size: int, device: torch.device, name: str =
     else:
         try:
             tokens = torch.tensor(token_ids)
-        except (TypeError, ValueError) as error:
+        except (TypeError, ValueError, RuntimeError) as error:
             raise ValueError(
-                f"{name} must be token IDs or equal-length lists of token IDs; "
+                f"{name} must be integer token IDs: a list, equal-length lists, or a tensor; "
                 "variable-length batches need padding masks, which generation does not support"
             ) from error
     if tokens.numel() == 0:
@@ -32,10 +44,11 @@ def as_token_batch(token_ids, vocab_size: int, device: torch.device, name: str =
     low, high = int(tokens.min()), int(tokens.max())
     if low < 0 or high >= vocab_size:
         raise ValueError(f"{name} token IDs must be in [0, {vocab_size}), got values in [{low}, {high}]")
-    return tokens.to(device=device, dtype=torch.long)
+    # Copy so the returned history never aliases the caller's prompt.
+    return tokens.to(device=device, dtype=torch.long, copy=True)
 
 
-def validate_generation_settings(
+def validate_settings(
     vocab_size: int,
     max_new_tokens: int,
     temperature: float,
@@ -45,18 +58,23 @@ def validate_generation_settings(
     forbidden_token_ids: Sequence[int] | None,
 ) -> None:
     """Reject settings that would crash mid-generation or make EOS stopping impossible."""
-    if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens < 0:
-        raise ValueError(f"max_new_tokens must be a nonnegative integer, got {max_new_tokens!r}")
-    if temperature < 0:
-        raise ValueError(f"temperature must be nonnegative (0 selects greedy decoding), got {temperature}")
-    if top_k < 0:
+    if checked_int(max_new_tokens, "max_new_tokens") < 0:
+        raise ValueError(f"max_new_tokens must be nonnegative, got {max_new_tokens}")
+    if not (math.isfinite(temperature) and temperature >= 0):
+        raise ValueError(f"temperature must be finite and nonnegative (0 selects greedy decoding), got {temperature}")
+    if checked_int(top_k, "top_k") < 0:
         raise ValueError(f"top_k must be nonnegative (0 disables it), got {top_k}")
     if not 0 < top_p <= 1:
         raise ValueError(f"top_p must be in (0, 1], got {top_p}")
-    forbidden = list(forbidden_token_ids or ())
-    for token_id in forbidden + ([] if eos_token_id is None else [eos_token_id]):
+    forbidden = set()
+    if forbidden_token_ids is not None:
+        forbidden = {checked_int(i, "forbidden_token_ids") for i in forbidden_token_ids}
+    stop = set() if eos_token_id is None else {checked_int(eos_token_id, "eos_token_id")}
+    for token_id in forbidden | stop:
         if not 0 <= token_id < vocab_size:
             raise ValueError(f"Token ID {token_id} is outside the vocabulary [0, {vocab_size})")
+    if len(forbidden) == vocab_size:
+        raise ValueError("forbidden_token_ids covers the whole vocabulary, leaving nothing to generate")
     if eos_token_id in forbidden:
         raise ValueError(f"eos_token_id {eos_token_id} is also forbidden, so generation could never stop on it")
 
@@ -68,10 +86,14 @@ def select_next_token(
     top_p: float = 1.0,
     forbidden_token_ids: Sequence[int] | None = None,
 ) -> torch.Tensor:
-    """Choose one token per row of [batch, vocab] logits and return [batch, 1]; temperature 0 is greedy."""
+    """Choose one token per row of [batch, vocab] logits and return [batch, 1]; temperature 0 is greedy.
+
+    The input logits are not modified.
+    """
     logits = logits.float()
-    if forbidden_token_ids:
-        logits[:, list(forbidden_token_ids)] = float("-inf")
+    if forbidden_token_ids is not None and len(forbidden_token_ids):
+        forbidden = torch.tensor(list(forbidden_token_ids), dtype=torch.long, device=logits.device)
+        logits = logits.index_fill(-1, forbidden, float("-inf"))
     if temperature == 0:
         return logits.argmax(dim=-1, keepdim=True)
     logits = logits / temperature

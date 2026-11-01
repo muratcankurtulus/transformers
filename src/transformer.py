@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from blocks import TransformerDecoder, TransformerEncoder
-from generation import as_token_batch, decode, validate_generation_settings
+from generation import as_token_batch, decode, validate_settings
 
 
 class Transformer(nn.Module):
@@ -60,8 +60,9 @@ class Transformer(nn.Module):
         generated tokens) to the decoder with a causal mask rebuilt for that history's length.
 
         Context limit: there is no sliding window, because cropping would drop the decoder's start
-        tokens. Sources longer than ``seq_len``, or target start plus ``max_new_tokens`` longer than
-        ``seq_len``, raise ValueError before any computation.
+        tokens. The last generated token is never fed back, so the decoder sees at most
+        ``tgt_length + max_new_tokens - 1`` positions; requests above ``seq_len``, or sources longer
+        than ``seq_len``, raise ValueError before any computation.
 
         Args:
             src: Nonempty source IDs, [length] or [batch, length].
@@ -74,7 +75,7 @@ class Transformer(nn.Module):
             torch.Tensor: [batch, tgt_length + n] target IDs with n <= max_new_tokens; n is smaller
             only when every sequence emitted ``eos_token_id``.
         """
-        validate_generation_settings(
+        validate_settings(
             self.tgt_vocab_size, max_new_tokens, temperature, top_k, top_p, eos_token_id, forbidden_token_ids
         )
         device = next(self.parameters()).device
@@ -84,9 +85,11 @@ class Transformer(nn.Module):
             raise ValueError(f"src and tgt batch sizes differ: {src.size(0)} != {tgt.size(0)}")
         if src.size(1) > self.seq_len:
             raise ValueError(f"src length {src.size(1)} exceeds seq_len {self.seq_len}")
-        if tgt.size(1) + max_new_tokens > self.seq_len:
+        decoder_positions = tgt.size(1) + max_new_tokens - 1
+        if decoder_positions > self.seq_len:
             raise ValueError(
-                f"tgt length {tgt.size(1)} + max_new_tokens {max_new_tokens} exceeds seq_len {self.seq_len}"
+                f"tgt length {tgt.size(1)} + max_new_tokens {max_new_tokens} needs {decoder_positions} "
+                f"decoder positions, exceeding seq_len {self.seq_len}"
             )
         was_training = self.training
         self.eval()
