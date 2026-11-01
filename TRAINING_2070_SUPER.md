@@ -162,11 +162,13 @@ python src/generate.py \
   --model_path runs/fineweb_2070/best.pth \
   --tokenizer_path toy_data/fineweb/tokenizer \
   --prompt "The water cycle is important because" \
-  --length 150 --temperature 0.8 --top_k 50 --top_p 0.9
+  --max_new_tokens 150 --temperature 0.8 --top_k 50 --top_p 0.9
 ```
 
-The new checkpoint supplies its architecture and context settings. Generation crops the context
-to the trained length and supports sampling. Try several fixed prompts and seeds, for example
+The new checkpoint supplies its architecture and context settings. Generation slides the context
+window over the last trained-length tokens and supports sampling. The FineWeb corpus separates
+documents with blank lines rather than `<EOS>`, so leave `--stop_at_eos` off; `--max_new_tokens`
+bounds the output. Try several fixed prompts and seeds, for example
 `--seed 42` and `--seed 43`, and compare early checkpoints with the selected best checkpoint.
 
 Assess whether held-out loss decreases, whether short completions become grammatical, and whether
